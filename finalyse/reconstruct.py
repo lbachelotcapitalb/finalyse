@@ -175,6 +175,52 @@ def couple_basket(factors_fine, weights, fee_annual=0.0, realized_annual=None,
     return r - fee_p
 
 
+# Correspondance « classe d'actif publiée » (composition scrapée) → facteur moteur.
+# LISTE ORDONNÉE : le plus spécifique d'abord (émergent/europe avant « action » générique).
+ASSET_CLASS_TO_FACTOR = [
+    ("emergent", "EM"), ("émergent", "EM"),
+    ("europe", "EUROPE"),
+    ("immobil", "RE"), ("foncier", "RE"), ("real estate", "RE"), ("reit", "RE"), ("scpi", "RE"),
+    ("infrastructure", "INFRA"), ("infra", "INFRA"),
+    ("obligation", "BONDS"), ("oblig", "BONDS"), ("taux", "BONDS"), ("bond", "BONDS"),
+    ("liquidit", "CASH"), ("monetaire", "CASH"), ("monétaire", "CASH"), ("tresorerie", "CASH"),
+    ("trésorerie", "CASH"), ("cash", "CASH"),
+    ("gold", "GOLD"), ("métaux précieux", "GOLD"), ("matieres", "COMMOD"), ("matières", "COMMOD"),
+    ("action", "WORLD"), ("equity", "WORLD"),   # générique en DERNIER
+]
+
+
+def composition_to_basket(composition, mapping=None):
+    """Convertit une COMPOSITION publiée du fonds (scrapée) en panier de facteurs.
+
+    composition : {libellé_classe: poids} — ex. {'Immobilier':0.58,'Obligations':0.32,'Liquidités':0.10}.
+    → {facteur: poids} agrégé et normalisé. C'est le meilleur prior possible :
+    la vraie allocation du fonds, pas une catégorie générique. Classes non
+    reconnues ignorées (le reste renormalisé). Match spécifique avant générique.
+    """
+    mp = mapping or ASSET_CLASS_TO_FACTOR
+    basket = {}
+    for label, w in composition.items():
+        lab = str(label).strip().lower()
+        fac = next((f for k, f in mp if k in lab), None)
+        if fac:
+            basket[fac] = basket.get(fac, 0.0) + float(w)
+    s = sum(basket.values())
+    return {f: w / s for f, w in basket.items()} if s > 0 else {}
+
+
+def train_prior(category_returns, factors_df, base_prior=None, strength=1.0):
+    """Calibre EMPIRIQUEMENT un prior de catégorie à partir de rendements RÉELS
+    représentatifs (indice de catégorie ou moyenne de fonds). Beaucoup de données
+    + strength faible → prior piloté par la donnée (vs deviné à la main).
+    Renvoie {facteur: poids}.
+    """
+    base = base_prior or {f: 1.0 / len(factors_df.columns) for f in factors_df.columns}
+    w, _r2, _n = fit_basket(category_returns, factors_df, base, strength)
+    s = sum(w.values())
+    return {f: v / s for f, v in w.items()} if s > 0 else base
+
+
 def confidence(r2, n_obs, smoothed=False):
     """Score 0-100 : part 'pilotée par la donnée' vs 'pilotée par le prior'.
     Pénalise le peu d'observations et la valorisation lissée (VL d'expert).
