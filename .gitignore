@@ -5,3 +5,4 @@ result*.json
 frontend/dashboard.html
 *.png
 .playwright-mcp/
+.env
