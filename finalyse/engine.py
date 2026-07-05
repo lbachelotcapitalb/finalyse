@@ -96,12 +96,15 @@ def run(alpha=0.95, wmax=0.35, verbose=True, source="auto"):
         "hrp": ("HRP — le plus décorrélé (López de Prado)", w_hrp),
         "minvar_lw": ("Min-variance Ledoit-Wolf (repère variance)", w_mv),
     }
+    curve_returns = {"Benchmark": rb}
     for key, (desc, w) in base.items():
         r = _port_returns(ret, w, keys)
         result["portefeuilles"][key] = {
             "description": desc, "poids": _weights_dict(w, keys),
             "in_sample": m.summary(r, alpha),
         }
+        if key == "min_cdar":
+            curve_returns["Min-drawdown"] = r
     result["portefeuilles"]["minvar_lw"]["ledoitwolf_shrinkage"] = round(shrink, 3)
 
     # --- Frontière drawdown-efficiente + portefeuilles par profil ---
@@ -121,6 +124,7 @@ def run(alpha=0.95, wmax=0.35, verbose=True, source="auto"):
             "cible_maxdd": target, "poids": _weights_dict(pick["weights"], keys),
             "in_sample": m.summary(r, alpha),
         }
+        curve_returns[f"Profil {pname}"] = r
 
     # --- Walk-forward + contrôle d'honnêteté ---
     result["walk_forward"] = {}
@@ -137,5 +141,18 @@ def run(alpha=0.95, wmax=0.35, verbose=True, source="auto"):
     pick = _pick_profile_portfolio(ret, frontier, PROFILES["equilibre"], keys) or {"weights": w_mc}
     r_eq = _port_returns(ret, pick["weights"], keys)
     result["monte_carlo_equilibre"] = mc.project(r_eq, horizon_years=10, n_sims=2000)
+
+    # --- Courbes perf/drawdown pour le front (downsamplées ~mensuel) ---
+    step = max(1, len(ret) // 320)
+    dates = [d.strftime("%Y-%m-%d") for d in ret.index][::step]
+    courbes = {}
+    for name, r in curve_returns.items():
+        eq = np.cumprod(1.0 + np.asarray(r, float))
+        peak = np.maximum.accumulate(eq)
+        dd = eq / peak - 1.0
+        courbes[name] = {"dates": dates,
+                         "equity": [round(float(x), 4) for x in eq[::step]],
+                         "drawdown": [round(float(x), 4) for x in dd[::step]]}
+    result["courbes"] = courbes
 
     return result
