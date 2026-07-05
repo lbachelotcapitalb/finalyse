@@ -28,16 +28,32 @@ import scipy.optimize as _sciopt
 
 WK = 52.0
 
-# Priors d'exposition économique par catégorie de fonds (facteurs liquides).
-# Portent le VRAI risque quand la donnée du fonds est trop pauvre pour l'estimer.
+# Jeu de facteurs EUR DÉCOLLINÉARISÉ (natif EUR quand possible → sans bruit FX ;
+# US converti via to_eur sinon). Symbole EODHD + faut-il convertir en EUR.
+# Valider/étendre ce jeu est la clé pour un entraînement (train_prior) fiable.
+EUR_FACTOR_SYMBOLS = {
+    "WORLD":  ("VFINX.US", True),      # actions US/monde (FX réel pour un EUR)
+    "EUROPE": ("MSE.PA", False),       # MSCI Europe — NATIF EUR
+    "EM":     ("VEIEX.US", True),      # émergents
+    "BONDS":  ("IBCX.LSE", False),     # € Corporate — NATIF EUR
+    "RE":     ("IPRP.LSE", False),     # foncières EU — NATIF EUR
+    "INFRA":  ("XLU.US", True),        # infra (proxy utilities)
+    "GOLD":   ("XAUUSD.FOREX", True),
+    # "CASH" : synthétique (~monétaire), ajouté à 0 dans le tableau de facteurs
+}
+
+# Priors d'exposition économique par catégorie. Portent le VRAI risque quand la
+# donnée du fonds est trop pauvre. (v) = validé/affiné par entraînement sur fonds
+# réel (confiance élevée) ; les autres sont posés par bon sens économique.
 CATEGORY_PRIORS = {
     "OPCI":             {"RE": 0.62, "BONDS": 0.28, "CASH": 0.10},   # immo + poche liquide
     "SCPI":             {"RE": 0.92, "CASH": 0.08},
     "INFRA_NON_COTE":   {"INFRA": 0.65, "WORLD": 0.15, "BONDS": 0.20},
-    "MIXTE_PRUDENT":    {"WORLD": 0.30, "BONDS": 0.60, "CASH": 0.10},
-    "MIXTE_EQUILIBRE":  {"WORLD": 0.55, "BONDS": 0.40, "CASH": 0.05},
-    "ACTIONS_MONDE":    {"WORLD": 1.00},
-    "ACTIONS_EUROPE":   {"EUROPE": 1.00},
+    "MIXTE_PRUDENT":    {"EUROPE": 0.32, "BONDS": 0.33, "CASH": 0.25, "RE": 0.05, "WORLD": 0.05},  # (v) DNCA Eurose
+    "MIXTE_EQUILIBRE":  {"WORLD": 0.30, "EUROPE": 0.30, "BONDS": 0.30, "CASH": 0.10},
+    "FLEXIBLE_OFFENSIF": {"WORLD": 0.35, "EUROPE": 0.35, "GOLD": 0.12, "CASH": 0.13, "RE": 0.05},  # (v) R-co Valor
+    "ACTIONS_MONDE":    {"WORLD": 0.70, "EUROPE": 0.30},
+    "ACTIONS_EUROPE":   {"EUROPE": 0.90, "WORLD": 0.10},              # (v) Moneta Multi Caps
     "OBLIGATIONS":      {"BONDS": 0.90, "CASH": 0.10},
     "MONETAIRE":        {"CASH": 1.00},
 }
