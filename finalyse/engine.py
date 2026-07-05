@@ -115,6 +115,7 @@ def run(alpha=0.95, wmax=0.35, verbose=True, source="auto"):
     frontier = opt.drawdown_frontier(ret.values, alpha=alpha, wmax=wmax, n_points=14)
     result["frontiere"] = [
         {"cdar_budget": round(p["cdar_budget"], 4),
+         "poids": _weights_dict(p["weights"], keys),
          **m.summary(_port_returns(ret, p["weights"], keys), alpha)}
         for p in frontier
     ]

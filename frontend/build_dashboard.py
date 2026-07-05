@@ -112,10 +112,10 @@ def scatter_risk_return(result, W=560, H=260):
     return "".join(o)
 
 
-def frontier_chart(result, W=560, H=230):
+def frontier_chart(result, colors, labels, W=560, H=230):
     fr = result.get("frontiere", [])
     if not fr:
-        return "<p>—</p>"
+        return "<p>—</p>", None
     padL, padR, padT, padB = 44, 14, 12, 26
     xs, ys = [f["cdar_budget"] for f in fr], [f["cagr"] for f in fr]
     xlo, xhi, ylo, yhi = min(xs), max(xs), min(ys), max(ys)
@@ -127,11 +127,19 @@ def frontier_chart(result, W=560, H=230):
         o.append(f'<line x1="{padL}" y1="{Y(yv):.1f}" x2="{W-padR}" y2="{Y(yv):.1f}" stroke="#eef2f7"/>')
         o.append(f'<text x="{padL-6}" y="{Y(yv)+3:.1f}" font-size="9" fill="#94a3b8" text-anchor="end">{yv*100:.0f}%</text>')
         o.append(f'<text x="{X(xv):.0f}" y="{H-8}" font-size="9" fill="#94a3b8" text-anchor="middle">{xv*100:.0f}%</text>')
+    o.append(f'<text x="{padL}" y="{padT+2}" font-size="9" fill="#94a3b8">rendement/an</text>')
     o.append(f'<polyline points="{" ".join(f"{X(x):.1f},{Y(y):.1f}" for x,y in zip(xs,ys))}" fill="none" stroke="{ACCENT}" stroke-width="2"/>')
     for x, y in zip(xs, ys):
-        o.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="2.5" fill="{ACCENT}"/>')
-    o.append("</svg>")
-    return "".join(o)
+        o.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="3" fill="{ACCENT}"/>')
+    o.append('<g class="crosshair"></g></svg>')
+    pts = []
+    for f in fr:
+        poids = sorted(f.get("poids", {}).items(), key=lambda kv: -kv[1])
+        pts.append({"x": round(X(f["cdar_budget"]), 1), "y": round(Y(f["cagr"]), 1),
+                    "cdar": f["cdar_budget"], "cagr": f["cagr"],
+                    "poids": [{"l": labels.get(a, a), "w": round(w, 4), "c": colors.get(a, "#64748b")}
+                              for a, w in poids]})
+    return "".join(o), {"W": W, "H": H, "plotT": padT, "plotB": H - padB, "pts": pts}
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +151,15 @@ def _asset_colors(result):
         for a in result["portefeuilles"].get(pk, {}).get("poids", {}):
             if a not in order:
                 order.append(a)
+    for fp in result.get("frontiere", []):        # actifs présents seulement sur la frontière
+        for a in fp.get("poids", {}):
+            if a not in order:
+                order.append(a)
     return {a: ASSET_COLORS[i % len(ASSET_COLORS)] for i, a in enumerate(order)}
 
 
-def alloc_compare(result):
-    colors = _asset_colors(result)
+def alloc_compare(result, colors=None):
+    colors = colors or _asset_colors(result)
     labels = result.get("univers", {})
     profiles = [("profil_prudent", "Prudent"), ("profil_equilibre", "Équilibré"),
                 ("profil_dynamique", "Dynamique")]
@@ -230,15 +242,21 @@ def build(result):
         perf_svg = under_svg = "<p>(pas de courbes)</p>"
     legend = "".join(f'<span class="lg"><i style="background:{SERIES.get(n,"#64748b")}"></i>{n}</span>' for n in courbes)
 
+    colors = _asset_colors(result)
+    labels = result.get("univers", {})
+    front_svg, front_js = frontier_chart(result, colors, labels)
+
     body = HTML_BODY.replace("{{source}}", str(meta.get("source", "?"))) \
         .replace("{{start}}", str(meta.get("start"))).replace("{{end}}", str(meta.get("end"))) \
         .replace("{{years}}", str(meta.get("years"))).replace("{{n}}", str(meta.get("n_assets"))) \
         .replace("{{bench}}", result["benchmark"]["definition"]) \
         .replace("{{perf}}", perf_svg).replace("{{under}}", under_svg).replace("{{legend}}", legend) \
-        .replace("{{scatter}}", scatter_risk_return(result)).replace("{{frontier}}", frontier_chart(result)) \
-        .replace("{{alloc}}", alloc_compare(result)).replace("{{metrics}}", metrics_table(result)) \
+        .replace("{{scatter}}", scatter_risk_return(result)).replace("{{frontier}}", front_svg) \
+        .replace("{{alloc}}", alloc_compare(result, colors)).replace("{{metrics}}", metrics_table(result)) \
         .replace("{{mc}}", mc_block(result))
-    script = "<script>const CHARTS=" + json.dumps(charts, ensure_ascii=False) + ";\n" + HOVER_JS + "</script>"
+    script = ("<script>const CHARTS=" + json.dumps(charts, ensure_ascii=False)
+              + ";\nconst FRONTIER=" + json.dumps(front_js, ensure_ascii=False)
+              + ";\n" + HOVER_JS + FRONTIER_JS + "</script>")
     return "<!doctype html><html lang=fr><head><meta charset=utf-8>" \
            "<meta name=viewport content='width=device-width,initial-scale=1'>" \
            "<title>finalyse — dashboard</title><style>" + CSS + "</style></head><body>" + body + script + "</body></html>"
@@ -262,6 +280,7 @@ header .meta{color:#64748b;font-size:13px}
 .tip-row{display:flex;align-items:center;gap:6px;line-height:1.7}
 .tip-row i{width:9px;height:9px;border-radius:2px;display:inline-block}
 .tip-row b{margin-left:auto;font-variant-numeric:tabular-nums}
+.tbar{display:flex;height:12px;border-radius:4px;overflow:hidden;margin:6px 0 5px}.tbar div{height:100%}
 .legend{margin-top:8px;display:flex;flex-wrap:wrap;gap:14px}
 .lg{font-size:12px;color:#475569;display:flex;align-items:center;gap:6px}.lg i{width:11px;height:11px;border-radius:3px;display:inline-block}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -290,7 +309,8 @@ HTML_BODY = """
     <div class="chart" data-chart="perf">{{perf}}<div class="tip"></div></div>
     <div class="legend">{{legend}}</div></div>
   <div class="card"><h2>Rendement vs perte max <small>chaque point = un portefeuille</small></h2>{{scatter}}</div>
-  <div class="card"><h2>Frontière drawdown-efficiente</h2>{{frontier}}</div>
+  <div class="card"><h2>Frontière drawdown-efficiente <small>survole un point → son allocation</small></h2>
+    <div class="chart" data-chart="frontier">{{frontier}}<div class="tip"></div></div></div>
   <div class="card wide"><h2>Sous l'eau <small>(drawdown — survole)</small></h2>
     <div class="chart" data-chart="under">{{under}}<div class="tip"></div></div></div>
   <div class="card"><h2>Allocations précises comparées</h2>{{alloc}}</div>
@@ -322,6 +342,30 @@ document.querySelectorAll('.chart[data-chart]').forEach(function(el){
   svg.addEventListener('touchmove',function(e){move(e);e.preventDefault();},{passive:false});
   svg.addEventListener('mouseleave',function(){cross.innerHTML='';tip.style.display='none';});
 });
+"""
+
+FRONTIER_JS = """
+(function(){
+  var F=FRONTIER; if(!F)return;
+  var el=document.querySelector('.chart[data-chart="frontier"]'); if(!el)return;
+  var svg=el.querySelector('svg'), tip=el.querySelector('.tip'), cross=svg.querySelector('.crosshair');
+  function move(e){
+    var r=svg.getBoundingClientRect();
+    var cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left, vbX=cx/r.width*F.W, i=0, best=1e9;
+    for(var k=0;k<F.pts.length;k++){var d=Math.abs(F.pts[k].x-vbX);if(d<best){best=d;i=k;}}
+    var p=F.pts[i];
+    cross.innerHTML='<circle cx="'+p.x+'" cy="'+p.y+'" r="5.5" fill="none" stroke="#0d9488" stroke-width="2"/>';
+    var bar='', list='', shown=0;
+    p.poids.forEach(function(s){bar+='<div title="'+s.l+'" style="width:'+(s.w*100).toFixed(2)+'%;background:'+s.c+'"></div>';});
+    p.poids.forEach(function(s){if(s.w>=0.03&&shown<6){list+='<div class="tip-row"><i style="background:'+s.c+'"></i>'+s.l+'<b>'+(s.w*100).toFixed(1)+'%</b></div>';shown++;}});
+    tip.innerHTML='<div class="tip-date">Perte max ≤ '+(p.cdar*100).toFixed(1)+'% · '+(p.cagr>=0?'+':'')+(p.cagr*100).toFixed(1)+'%/an</div><div class="tbar">'+bar+'</div>'+list;
+    tip.style.display='block';
+    var px=p.x/F.W*r.width; tip.style.left=Math.min(px+14,r.width-186)+'px'; tip.style.top='6px';
+  }
+  svg.addEventListener('mousemove',move);
+  svg.addEventListener('touchmove',function(e){move(e);e.preventDefault();},{passive:false});
+  svg.addEventListener('mouseleave',function(){cross.innerHTML='';tip.style.display='none';});
+})();
 """
 
 
