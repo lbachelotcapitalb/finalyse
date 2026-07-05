@@ -1,0 +1,12 @@
+[Unit]
+Description=finalyse — sync quotidien des cours EODHD → Supabase
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=leo
+WorkingDirectory=/home/leo/finalyse
+EnvironmentFile=/home/leo/finalyse/.env
+Environment=PYTHONPATH=/home/leo/finalyse
+ExecStart=/home/leo/finalyse/.venv/bin/python -m finalyse.sync_supabase --universe all

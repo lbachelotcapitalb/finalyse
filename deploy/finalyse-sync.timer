@@ -1,0 +1,10 @@
+[Unit]
+Description=Déclenche finalyse-sync quotidiennement (cours EODHD → Supabase)
+
+[Timer]
+# 06:00 UTC : après clôture US (21:00 ET) + traitement EODHD. Déterministe (UTC).
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
