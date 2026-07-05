@@ -37,9 +37,12 @@ def _fetch_one(sym, token, start="2005-01-01", retries=3):
             req = urllib.request.Request(url, headers={"User-Agent": "finalyse/1.0"})
             raw = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
             rows = json.loads(raw)
-            if not isinstance(rows, list) or len(rows) < 50:
-                last = RuntimeError(f"{sym}: réponse courte/inattendue ({len(rows) if isinstance(rows,list) else type(rows)})")
+            if not isinstance(rows, list):
+                # un dict = message d'erreur EODHD ; une liste (même courte/vide) est valide
+                last = RuntimeError(f"{sym}: réponse inattendue ({type(rows).__name__})")
                 time.sleep(1.0); continue
+            if not rows:                       # incrémental à jour : 0 nouvelle ligne = normal
+                return pd.Series([], index=pd.to_datetime([]), name=sym, dtype="float64")
             dates = [r["date"] for r in rows]
             # adjusted_close = total return (dividendes réinvestis) ; fallback close
             vals = [r.get("adjusted_close", r.get("close")) for r in rows]
