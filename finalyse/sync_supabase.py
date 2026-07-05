@@ -14,6 +14,7 @@ import time
 import json
 import urllib.request
 import urllib.parse
+import urllib.error
 from . import universe as U
 from . import data_eodhd as DE
 
@@ -30,9 +31,13 @@ def _sb(path, method="GET", body=None, prefer=None):
         headers["Prefer"] = prefer
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        raw = r.read().decode()
-        return json.loads(raw) if raw.strip() else None
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw.strip() else None
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:400]
+        raise RuntimeError(f"Supabase {method} /{path.split('?')[0]} → HTTP {e.code}: {detail}")
 
 
 def _universe_symbols(name):

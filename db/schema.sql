@@ -44,3 +44,11 @@ create table if not exists finalyse.sync_log (
   ok         boolean,
   detail     text
 );
+
+-- Droits : un schéma créé à la main ne donne aucun privilège aux rôles de l'API.
+-- Le cron de sync écrit via la service_role (bypass RLS) → il lui faut ces GRANT.
+grant usage on schema finalyse to service_role;
+grant all privileges on all tables in schema finalyse to service_role;
+grant all privileges on all sequences in schema finalyse to service_role;
+alter default privileges in schema finalyse grant all on tables to service_role;
+alter default privileges in schema finalyse grant all on sequences to service_role;
