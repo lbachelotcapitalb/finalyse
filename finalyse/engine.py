@@ -67,6 +67,10 @@ def run(alpha=0.95, wmax=0.35, verbose=True, source="auto"):
         if not U.UCITS_SYMBOLS:
             raise RuntimeError("U.UCITS_SYMBOLS vide — lancer scripts/discover_ucits.py d'abord.")
         ret, _px, meta = DE.prepare(U.UCITS_SYMBOLS, start="1999-01-01", verbose=verbose)
+    elif source in ("supabase", "supabase_deep", "supabase_uc", "supabase_ucits"):
+        from . import data_supabase as DS
+        umap = {"supabase_uc": U.UC_SYMBOLS, "supabase_ucits": U.UCITS_SYMBOLS}.get(source, U.DEEP_HISTORY)
+        ret, _px, meta = DS.prepare(umap, verbose=verbose)
     else:
         try:
             ret, _px, meta = D.prepare(U.TICKERS, verbose=verbose)

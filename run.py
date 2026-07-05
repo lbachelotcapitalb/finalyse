@@ -9,7 +9,10 @@ def fmt_pct(x):
 
 
 def main():
-    source = ("eodhd_uc" if "--uc" in sys.argv else
+    source = ("supabase_uc" if "--sb-uc" in sys.argv else
+              "supabase_ucits" if "--sb-ucits" in sys.argv else
+              "supabase" if "--supabase" in sys.argv else
+              "eodhd_uc" if "--uc" in sys.argv else
               "eodhd_ucits" if "--ucits" in sys.argv else
               "eodhd_deep" if "--deep" in sys.argv else
               "eodhd" if "--eodhd" in sys.argv else
