@@ -133,7 +133,7 @@ def couple(proxy_returns, fee_annual, fund_real_returns=None,
 # ---------------------------------------------------------------------------
 # Panier multi-facteurs pour UC pauvres en données (mieux qu'un proxy unique)
 # ---------------------------------------------------------------------------
-def fit_basket(fund_returns, factors_df, prior_weights, strength=6.0):
+def fit_basket(fund_returns, factors_df, prior_weights, strength=6.0, blend=True):
     """Ajuste un panier de facteurs aux rendements du fonds, RIDGE vers un prior
     de catégorie. Peu de points → reste près du prior (exposition économique
     connue = vrai risque) ; beaucoup de points → suit l'ajustement. Poids ≥ 0 (NNLS).
@@ -156,9 +156,11 @@ def fit_basket(fund_returns, factors_df, prior_weights, strength=6.0):
     r2 = 1.0 - float(np.sum((y - pred) ** 2)) / ss_tot
     # fond l'ajustement vers le prior au prorata de la confiance-données :
     # peu/mauvaise data (r2 bas, n petit) → on garde le prior (vrai risque connu).
+    if not blend:                                        # entraînement : on laisse parler la donnée
+        return {f: float(wi) for f, wi in zip(facs, w) if wi > 1e-4}, r2, n
     c = max(0.0, min(1.0, r2)) * (n / (n + 6.0))
-    blend = {f: c * wi + (1 - c) * prior_weights.get(f, 0.0) for f, wi in zip(facs, w)}
-    return {f: v for f, v in blend.items() if v > 1e-4}, r2, n
+    bl = {f: c * wi + (1 - c) * prior_weights.get(f, 0.0) for f, wi in zip(facs, w)}
+    return {f: v for f, v in bl.items() if v > 1e-4}, r2, n
 
 
 def couple_basket(factors_fine, weights, fee_annual=0.0, realized_annual=None,
@@ -211,12 +213,17 @@ def composition_to_basket(composition, mapping=None):
 
 def train_prior(category_returns, factors_df, base_prior=None, strength=1.0):
     """Calibre EMPIRIQUEMENT un prior de catégorie à partir de rendements RÉELS
-    représentatifs (indice de catégorie ou moyenne de fonds). Beaucoup de données
-    + strength faible → prior piloté par la donnée (vs deviné à la main).
-    Renvoie {facteur: poids}.
+    représentatifs (indice de catégorie ou moyenne de fonds). Renvoie {facteur: poids}.
+
+    ⚠️ FIABLE UNIQUEMENT avec un jeu de facteurs propre : facteurs actions
+    MULTI-RÉGIONS distincts (Europe/US/Monde/Émergents), NON collinéaires (éviter
+    de tous les convertir via le même FX), sinon le NNLS distribue les poids à tort
+    (un fonds 100% actions peut ressortir avec des obligations). En pratique, la
+    COMPOSITION RÉELLE scrapée (composition_to_basket) est un prior bien plus sûr
+    que l'entraînement statistique. `train_prior` = repli quand aucune compo dispo.
     """
     base = base_prior or {f: 1.0 / len(factors_df.columns) for f in factors_df.columns}
-    w, _r2, _n = fit_basket(category_returns, factors_df, base, strength)
+    w, _r2, _n = fit_basket(category_returns, factors_df, base, strength, blend=False)
     s = sum(w.values())
     return {f: v / s for f, v in w.items()} if s > 0 else base
 
