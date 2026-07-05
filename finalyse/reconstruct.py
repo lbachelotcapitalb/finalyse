@@ -24,8 +24,23 @@ DÉ-LISSÉS (Geltner) quand on dispose de leur VL, pour retrouver la vraie vol.
 """
 import numpy as np
 import pandas as pd
+import scipy.optimize as _sciopt
 
 WK = 52.0
+
+# Priors d'exposition économique par catégorie de fonds (facteurs liquides).
+# Portent le VRAI risque quand la donnée du fonds est trop pauvre pour l'estimer.
+CATEGORY_PRIORS = {
+    "OPCI":             {"RE": 0.62, "BONDS": 0.28, "CASH": 0.10},   # immo + poche liquide
+    "SCPI":             {"RE": 0.92, "CASH": 0.08},
+    "INFRA_NON_COTE":   {"INFRA": 0.65, "WORLD": 0.15, "BONDS": 0.20},
+    "MIXTE_PRUDENT":    {"WORLD": 0.30, "BONDS": 0.60, "CASH": 0.10},
+    "MIXTE_EQUILIBRE":  {"WORLD": 0.55, "BONDS": 0.40, "CASH": 0.05},
+    "ACTIONS_MONDE":    {"WORLD": 1.00},
+    "ACTIONS_EUROPE":   {"EUROPE": 1.00},
+    "OBLIGATIONS":      {"BONDS": 0.90, "CASH": 0.10},
+    "MONETAIRE":        {"CASH": 1.00},
+}
 
 
 def to_eur(prices_usd, eurusd_prices):
@@ -113,3 +128,59 @@ def couple(proxy_returns, fee_annual, fund_real_returns=None,
     else:
         alpha_gross = 0.0                                # suit le proxy brut ; frais seuls diffèrent
     return reconstruct(proxy_returns, beta, alpha_gross, fee_annual, 0.0, seed, ppy)
+
+
+# ---------------------------------------------------------------------------
+# Panier multi-facteurs pour UC pauvres en données (mieux qu'un proxy unique)
+# ---------------------------------------------------------------------------
+def fit_basket(fund_returns, factors_df, prior_weights, strength=6.0):
+    """Ajuste un panier de facteurs aux rendements du fonds, RIDGE vers un prior
+    de catégorie. Peu de points → reste près du prior (exposition économique
+    connue = vrai risque) ; beaucoup de points → suit l'ajustement. Poids ≥ 0 (NNLS).
+
+    Renvoie (weights: dict, r2, n_obs). Fréquence libre (annuelle si c'est tout
+    ce qu'on a) — les poids s'appliqueront ensuite à la granularité fine.
+    """
+    facs = list(factors_df.columns)
+    prior = np.array([prior_weights.get(f, 0.0) for f in facs])
+    df = pd.concat([pd.Series(fund_returns).rename("y"), factors_df], axis=1).dropna()
+    if len(df) < 2:
+        return dict(prior_weights), 0.0, len(df)
+    y, F, n = df["y"].values, df[facs].values, len(df)
+    lam = strength / n                                   # + de data → - de shrinkage
+    A = np.vstack([F, np.sqrt(lam) * np.eye(len(facs))])
+    b = np.concatenate([y, np.sqrt(lam) * prior])
+    w, _ = _sciopt.nnls(A, b)
+    pred = F @ w
+    ss_tot = float(np.sum((y - y.mean()) ** 2)) or 1.0
+    r2 = 1.0 - float(np.sum((y - pred) ** 2)) / ss_tot
+    # fond l'ajustement vers le prior au prorata de la confiance-données :
+    # peu/mauvaise data (r2 bas, n petit) → on garde le prior (vrai risque connu).
+    c = max(0.0, min(1.0, r2)) * (n / (n + 6.0))
+    blend = {f: c * wi + (1 - c) * prior_weights.get(f, 0.0) for f, wi in zip(facs, w)}
+    return {f: v for f, v in blend.items() if v > 1e-4}, r2, n
+
+
+def couple_basket(factors_fine, weights, fee_annual=0.0, realized_annual=None,
+                  ppy=WK):
+    """Reconstruit la série longue à partir d'un panier ajusté (weights) appliqué
+    aux facteurs à granularité fine. Niveau calé sur le réalisé NET si fourni,
+    frais réels déduits. → deux UC de même thème diffèrent par panier + niveau + frais.
+    """
+    r = sum(factors_fine[f] * w for f, w in weights.items() if f in factors_fine)
+    fee_p = _fee_per_period(fee_annual, ppy)
+    if realized_annual is not None:
+        tgt = (1 + realized_annual) ** (1 / ppy) - 1
+        r = r - r.mean() + tgt + fee_p                   # cale le NET après déduction des frais
+    return r - fee_p
+
+
+def confidence(r2, n_obs, smoothed=False):
+    """Score 0-100 : part 'pilotée par la donnée' vs 'pilotée par le prior'.
+    Pénalise le peu d'observations et la valorisation lissée (VL d'expert).
+    """
+    data = max(0.0, min(1.0, r2)) * (n_obs / (n_obs + 6.0))
+    if smoothed:
+        data *= 0.6
+    lvl = "donnée" if data > 0.5 else ("mixte" if data > 0.2 else "prior")
+    return round(100 * data), lvl
