@@ -112,25 +112,52 @@ def scatter_risk_return(result, W=560, H=260):
     return "".join(o)
 
 
-def frontier_chart(result, colors, labels, W=560, H=230):
+def frontier_chart(result, colors, labels, W=900, H=300):
     fr = result.get("frontiere", [])
     if not fr:
         return "<p>—</p>", None
-    padL, padR, padT, padB = 44, 14, 12, 26
+    padL, padR, padT, padB = 46, 16, 16, 28
     xs, ys = [f["cdar_budget"] for f in fr], [f["cagr"] for f in fr]
-    xlo, xhi, ylo, yhi = min(xs), max(xs), min(ys), max(ys)
+    # portefeuilles analysés à placer sur la frontière (x = CDaR réalisé, y = rendement)
+    ports = []
+    b = result["benchmark"]["in_sample"]
+    ports.append(("Benchmark", b["cdar95"], b["cagr"], "#94a3b8"))
+    for k, nm, c in [("min_cdar", "Min-drawdown", "#0ea5e9"), ("profil_prudent", "Prudent", "#10b981"),
+                     ("profil_equilibre", "Équilibré", "#6366f1"), ("profil_dynamique", "Dynamique", "#f59e0b")]:
+        s = result["portefeuilles"].get(k, {}).get("in_sample")
+        if s:
+            ports.append((nm, s["cdar95"], s["cagr"], c))
+    # fusionne les points coïncidents (Prudent == Min-drawdown)
+    merged = {}
+    for nm, cd, cg, c in ports:
+        key = (round(cd, 3), round(cg, 3))
+        merged[key] = (f"{merged[key][0]} = {nm}", cd, cg, c) if key in merged else (nm, cd, cg, c)
+    ports = list(merged.values())
+
+    allx = xs + [p[1] for p in ports]
+    ally = ys + [p[2] for p in ports]
+    xlo, xhi = min(allx), max(allx)
+    ylo, yhi = min(ally), max(ally)
     X = lambda v: padL + (v - xlo) / ((xhi - xlo) or 1) * (W - padL - padR)
-    Y = lambda v: _sy(v, ylo - (yhi - ylo) * .1, yhi + (yhi - ylo) * .1, padT, H - padB)
+    Y = lambda v: _sy(v, ylo - (yhi - ylo) * .12, yhi + (yhi - ylo) * .12, padT, H - padB)
     o = [f'<svg viewBox="0 0 {W} {H}" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">']
     for k in range(5):
         yv, xv = ylo + (yhi - ylo) * k / 4, xlo + (xhi - xlo) * k / 4
         o.append(f'<line x1="{padL}" y1="{Y(yv):.1f}" x2="{W-padR}" y2="{Y(yv):.1f}" stroke="#eef2f7"/>')
-        o.append(f'<text x="{padL-6}" y="{Y(yv)+3:.1f}" font-size="9" fill="#94a3b8" text-anchor="end">{yv*100:.0f}%</text>')
-        o.append(f'<text x="{X(xv):.0f}" y="{H-8}" font-size="9" fill="#94a3b8" text-anchor="middle">{xv*100:.0f}%</text>')
-    o.append(f'<text x="{padL}" y="{padT+2}" font-size="9" fill="#94a3b8">rendement/an</text>')
+        o.append(f'<text x="{padL-6}" y="{Y(yv)+3:.1f}" font-size="9.5" fill="#94a3b8" text-anchor="end">{yv*100:.0f}%</text>')
+        o.append(f'<text x="{X(xv):.0f}" y="{H-8}" font-size="9.5" fill="#94a3b8" text-anchor="middle">{xv*100:.0f}%</text>')
+    o.append(f'<text x="{padL}" y="{padT-2}" font-size="9.5" fill="#94a3b8">rendement/an ↑   ·   perte max (CDaR) →</text>')
+    # courbe de la frontière
     o.append(f'<polyline points="{" ".join(f"{X(x):.1f},{Y(y):.1f}" for x,y in zip(xs,ys))}" fill="none" stroke="{ACCENT}" stroke-width="2"/>')
     for x, y in zip(xs, ys):
-        o.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="3" fill="{ACCENT}"/>')
+        o.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="2.5" fill="{ACCENT}" opacity="0.6"/>')
+    # points des portefeuilles analysés (nommés)
+    for nm, cd, cg, c in ports:
+        px, py = X(cd), Y(cg)
+        anchor = "end" if px > W - padR - 90 else "start"
+        dx = -9 if anchor == "end" else 9
+        o.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="6" fill="{c}" stroke="#fff" stroke-width="1.5"/>')
+        o.append(f'<text x="{px+dx:.1f}" y="{py+3.5:.1f}" font-size="10.5" fill="#334155" text-anchor="{anchor}" font-weight="500">{nm}</text>')
     o.append('<g class="crosshair"></g></svg>')
     pts = []
     for f in fr:
@@ -140,6 +167,48 @@ def frontier_chart(result, colors, labels, W=560, H=230):
                     "poids": [{"l": labels.get(a, a), "w": round(w, 4), "c": colors.get(a, "#64748b")}
                               for a, w in poids]})
     return "".join(o), {"W": W, "H": H, "plotT": padT, "plotB": H - padB, "pts": pts}
+
+
+def alloc_transition(result, colors, labels, W=900, H=300):
+    """Aire empilée : évolution CONTINUE de l'allocation le long de la frontière
+    (x = budget de perte max, y = 0-100 %, une bande de couleur par actif)."""
+    fr = result.get("frontiere", [])
+    if not fr:
+        return "<p>—</p>"
+    order = [a for a in colors if any(a in f.get("poids", {}) for f in fr)]
+    padL, padR, padT, padB = 40, 200, 14, 28
+    plotW, plotH = W - padL - padR, H - padT - padB
+    n = len(fr)
+    xs = [padL + i / max(n - 1, 1) * plotW for i in range(n)]
+    # poids normalisés par point (somme = 1)
+    WN = []
+    for f in fr:
+        p = f.get("poids", {})
+        tot = sum(p.get(a, 0) for a in order) or 1
+        WN.append({a: p.get(a, 0) / tot for a in order})
+    Yf = lambda frac: padT + (1 - frac) * plotH        # frac 0..1 → bas..haut
+    o = [f'<svg viewBox="0 0 {W} {H}" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">']
+    cum = [0.0] * n
+    for a in order:
+        top = [cum[i] + WN[i][a] for i in range(n)]
+        pts_top = " ".join(f"{xs[i]:.1f},{Yf(top[i]):.1f}" for i in range(n))
+        pts_bot = " ".join(f"{xs[i]:.1f},{Yf(cum[i]):.1f}" for i in range(n - 1, -1, -1))
+        o.append(f'<polygon points="{pts_top} {pts_bot}" fill="{colors[a]}" opacity="0.92"/>')
+        cum = top
+    # axes
+    for frac in (0, .25, .5, .75, 1):
+        o.append(f'<text x="{padL-6}" y="{Yf(frac)+3:.1f}" font-size="9.5" fill="#94a3b8" text-anchor="end">{int(frac*100)}%</text>')
+    for k in range(5):
+        xv = fr[0]["cdar_budget"] + (fr[-1]["cdar_budget"] - fr[0]["cdar_budget"]) * k / 4
+        o.append(f'<text x="{padL + plotW*k/4:.0f}" y="{H-8}" font-size="9.5" fill="#94a3b8" text-anchor="middle">{xv*100:.0f}%</text>')
+    # légende à droite
+    ly = padT + 4
+    for a in order:
+        o.append(f'<rect x="{W-padR+8}" y="{ly-8}" width="10" height="10" rx="2" fill="{colors[a]}"/>')
+        o.append(f'<text x="{W-padR+22}" y="{ly+1}" font-size="9.5" fill="#475569">{labels.get(a, a)}</text>')
+        ly += 17
+    o.append("</svg>")
+    return "".join(o)
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +321,7 @@ def build(result):
         .replace("{{bench}}", result["benchmark"]["definition"]) \
         .replace("{{perf}}", perf_svg).replace("{{under}}", under_svg).replace("{{legend}}", legend) \
         .replace("{{scatter}}", scatter_risk_return(result)).replace("{{frontier}}", front_svg) \
+        .replace("{{transition}}", alloc_transition(result, colors, labels)) \
         .replace("{{alloc}}", alloc_compare(result, colors)).replace("{{metrics}}", metrics_table(result)) \
         .replace("{{mc}}", mc_block(result))
     script = ("<script>const CHARTS=" + json.dumps(charts, ensure_ascii=False)
@@ -308,13 +378,14 @@ HTML_BODY = """
   <div class="card wide"><h2>Performance <small>(base 100 — survole la courbe)</small></h2>
     <div class="chart" data-chart="perf">{{perf}}<div class="tip"></div></div>
     <div class="legend">{{legend}}</div></div>
-  <div class="card"><h2>Rendement vs perte max <small>chaque point = un portefeuille</small></h2>{{scatter}}</div>
-  <div class="card"><h2>Frontière drawdown-efficiente <small>survole un point → son allocation</small></h2>
+  <div class="card wide"><h2>Frontière drawdown-efficiente <small>points = portefeuilles analysés · survole la courbe → l'allocation</small></h2>
     <div class="chart" data-chart="frontier">{{frontier}}<div class="tip"></div></div></div>
+  <div class="card wide"><h2>Transition d'allocation le long de la frontière <small>évolution continue du mélange, du défensif à l'offensif</small></h2>{{transition}}</div>
+  <div class="card"><h2>Rendement vs perte max <small>chaque point = un portefeuille</small></h2>{{scatter}}</div>
+  <div class="card"><h2>Projection Monte-Carlo <small>(équilibré, 10 ans)</small></h2>{{mc}}</div>
   <div class="card wide"><h2>Sous l'eau <small>(drawdown — survole)</small></h2>
     <div class="chart" data-chart="under">{{under}}<div class="tip"></div></div></div>
-  <div class="card"><h2>Allocations précises comparées</h2>{{alloc}}</div>
-  <div class="card"><h2>Projection Monte-Carlo <small>(équilibré, 10 ans)</small></h2>{{mc}}</div>
+  <div class="card wide"><h2>Allocations précises comparées</h2>{{alloc}}</div>
   <div class="card wide"><h2>Métriques (in-sample)</h2>{{metrics}}</div>
   <div class="note">finalyse — prototype de test. Données EODHD (total return). Chiffres in-sample, non contractuels.</div>
 </div>"""
