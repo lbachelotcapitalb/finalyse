@@ -28,6 +28,15 @@ import pandas as pd
 WK = 52.0
 
 
+def to_eur(prices_usd, eurusd_prices):
+    """Convertit une série de PRIX en USD vers EUR via EURUSD (= USD par EUR).
+    Permet de rapatrier des proxys profonds US (25+ ans) en base EUR, plutôt que
+    d'être borné par l'inception tardive des ETF UCITS libellés EUR.
+    """
+    fx = eurusd_prices.reindex(prices_usd.index).ffill()
+    return (prices_usd / fx).dropna()
+
+
 def unsmooth_geltner(returns, phi=None):
     """Dé-lissage de Geltner : r_vrai = (r_obs − φ·r_obs,t−1) / (1−φ).
 
@@ -66,20 +75,21 @@ def _fee_per_period(fee_annual, freq=WK):
 
 
 def reconstruct(proxy_returns, beta=1.0, alpha=0.0, fee_annual=0.0,
-                resid_vol=0.0, seed=7):
+                resid_vol=0.0, seed=7, ppy=WK):
     """Série longue reconstruite à la granularité du proxy :
     alpha + beta·proxy + residu − frais. (alpha ici = gross, frais déduits à part.)
+    ppy = périodes/an (52 hebdo, 252 quotidien) pour le calcul des frais.
     """
     idx = proxy_returns.index if hasattr(proxy_returns, "index") else None
     p = np.asarray(getattr(proxy_returns, "values", proxy_returns), float)
     rng = np.random.default_rng(seed)
     eps = rng.normal(0.0, resid_vol, len(p)) if resid_vol > 0 else 0.0
-    r = alpha + beta * p + eps - _fee_per_period(fee_annual)
+    r = alpha + beta * p + eps - _fee_per_period(fee_annual, ppy)
     return pd.Series(r, index=idx)
 
 
 def couple(proxy_returns, fee_annual, fund_real_returns=None,
-           fund_realized_annual=None, seed=7):
+           fund_realized_annual=None, seed=7, ppy=WK):
     """Couple le proxy (risque systématique long) avec la réalité du fonds.
 
     Priorité des sources de vérité du fonds :
@@ -91,15 +101,15 @@ def couple(proxy_returns, fee_annual, fund_real_returns=None,
     Dans tous les cas les FRAIS RÉELS du fonds sont appliqués → deux UC de même
     thème mais de frais/skill différents obtiennent des séries différentes.
     """
-    fee_p = _fee_per_period(fee_annual)
+    fee_p = _fee_per_period(fee_annual, ppy)
     if fund_real_returns is not None and pd.Series(fund_real_returns).dropna().shape[0] >= 8:
         a_net, beta, resid = estimate_factor(fund_real_returns, proxy_returns)
         alpha_gross = a_net + fee_p                      # sépare les frais proprement
-        return reconstruct(proxy_returns, beta, alpha_gross, fee_annual, resid, seed)
+        return reconstruct(proxy_returns, beta, alpha_gross, fee_annual, resid, seed, ppy)
     beta = 1.0
     if fund_realized_annual is not None:
-        tgt_p = (1 + fund_realized_annual) ** (1 / WK) - 1
+        tgt_p = (1 + fund_realized_annual) ** (1 / ppy) - 1
         alpha_gross = tgt_p - beta * float(np.mean(getattr(proxy_returns, "values", proxy_returns))) + fee_p
     else:
         alpha_gross = 0.0                                # suit le proxy brut ; frais seuls diffèrent
-    return reconstruct(proxy_returns, beta, alpha_gross, fee_annual, 0.0, seed)
+    return reconstruct(proxy_returns, beta, alpha_gross, fee_annual, 0.0, seed, ppy)
