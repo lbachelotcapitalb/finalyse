@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 440" font-family="Helvetica, Arial, sans-serif">
+  <rect width="700" height="440" fill="#ffffff"/>
+  <text x="350" y="30" text-anchor="middle" font-size="19" font-weight="bold" fill="#111827">La carte risque / rendement</text>
+  <text x="350" y="50" text-anchor="middle" font-size="13" fill="#6B7280">« On ne compare que des risques équivalents »</text>
+
+  <defs>
+    <marker id="arrUp" markerWidth="10" markerHeight="10" refX="5" refY="6" orient="auto">
+      <path d="M0,6 L5,0 L10,6 Z" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <!-- axes -->
+  <line x1="95" y1="380" x2="650" y2="380" stroke="#374151" stroke-width="2"/>
+  <line x1="95" y1="380" x2="95" y2="80" stroke="#374151" stroke-width="2"/>
+  <text x="375" y="415" text-anchor="middle" font-size="14" fill="#374151">Risque = perte maximale possible  →</text>
+  <text x="52" y="230" text-anchor="middle" font-size="14" fill="#374151" transform="rotate(-90 52 230)">Rendement espéré  ↑</text>
+
+  <!-- frontière efficiente -->
+  <path d="M150,335 C 300,210 470,155 615,120" fill="none" stroke="#2563EB" stroke-width="3.5"/>
+  <text x="300" y="108" font-size="13" fill="#2563EB" font-weight="bold">frontière efficiente</text>
+  <text x="300" y="126" font-size="11.5" fill="#2563EB">= le meilleur rendement atteignable, risque par risque</text>
+
+  <!-- points profils -->
+  <circle cx="200" cy="300" r="7" fill="#1D4ED8"/><text x="148" y="296" font-size="12" fill="#111827">Prudent</text>
+  <circle cx="360" cy="188" r="7" fill="#1D4ED8"/><text x="374" y="185" font-size="12" fill="#111827">Équilibré</text>
+  <circle cx="560" cy="138" r="7" fill="#1D4ED8"/><text x="560" y="162" text-anchor="middle" font-size="12" fill="#111827">Dynamique</text>
+
+  <!-- ligne de risque égal + point dominé + flèche verticale -->
+  <line x1="360" y1="380" x2="360" y2="170" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3 4"/>
+  <circle cx="360" cy="300" r="7" fill="#9CA3AF"/>
+  <text x="374" y="305" font-size="12" fill="#6B7280">portefeuille « dominé »</text>
+  <text x="374" y="321" font-size="11" fill="#9CA3AF">même risque, moins de rendement</text>
+  <line x1="360" y1="292" x2="360" y2="200" stroke="#059669" stroke-width="2.5" stroke-dasharray="5 3" marker-end="url(#arrUp)"/>
+  <text x="120" y="350" font-size="11.5" fill="#059669">à risque égal (ligne verticale grise),</text>
+  <text x="120" y="365" font-size="11.5" fill="#059669">on garde le point le plus haut ↗</text>
+</svg>

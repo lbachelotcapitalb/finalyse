@@ -179,6 +179,52 @@ def fit_basket(fund_returns, factors_df, prior_weights, strength=6.0, blend=True
     return {f: v for f, v in bl.items() if v > 1e-4}, r2, n
 
 
+def couple_spliced(proxy_returns, fund_real_returns, fee_annual=0.0, seed=7,
+                   ppy=WK, unsmooth=False):
+    """BACKFILL CALIBRÉ (« la data alimente le proxy ») — le bon compromis entre
+    remplacement strict (perd les crises longues) et mix pondéré (ad hoc).
+
+    Là où la VRAIE série du fonds existe (récent, ex. 5 ans Quantalys) → on l'utilise
+    telle quelle (comportement réel, régime récent). Avant → reconstruction du proxy
+    CALIBRÉE sur le recouvrement : on estime (α, β, vol résiduelle) du fonds contre
+    le proxy sur l'overlap, puis on les extrapole sur le passé profond (crises réelles
+    conservées). Séries CHAÎNÉES (rendements → pas de saut de niveau).
+
+    unsmooth=True : dé-lisse d'abord la série réelle (Geltner) — À METTRE pour une VL
+    d'expert lissée (OPCI/SCPI/infra non coté), sinon on ré-injecte le lissage qu'on
+    combat. Pour un fonds LIQUIDE (VL de marché), laisser False.
+
+    Renvoie (série_hebdo, meta) où meta = {beta, alpha, resid, r2, n_overlap,
+    confiance, debut_reel}. Repli sur `couple` (calibration de niveau) si < 8 points réels.
+    """
+    proxy = pd.Series(proxy_returns).dropna()
+    real = pd.Series(fund_real_returns).dropna()
+    if len(real) < 8:
+        return couple(proxy, fee_annual, seed=seed, ppy=ppy), {"confiance": 0, "note": "réel insuffisant → calibration de niveau"}
+    if unsmooth:
+        vals, _phi = unsmooth_geltner(real.values)
+        real = pd.Series(vals, index=real.index)
+    a_net, beta, resid = estimate_factor(real, proxy)
+    ov = pd.concat([real.rename("f"), proxy.rename("p")], axis=1).dropna()
+    r2 = 0.0
+    if len(ov) >= 8 and ov["p"].var() > 0:
+        pred = a_net + beta * ov["p"].values
+        ss = float(((ov["f"].values - ov["f"].mean()) ** 2).sum()) or 1.0
+        r2 = 1.0 - float(((ov["f"].values - pred) ** 2).sum()) / ss
+    fee_p = _fee_per_period(fee_annual, ppy)
+    cutoff = real.index.min()
+    deep = proxy[proxy.index < cutoff]
+    recon_deep = reconstruct(deep, beta, a_net + fee_p, fee_annual, resid, seed, ppy)
+    recent = real[real.index >= cutoff]
+    out = pd.concat([recon_deep, recent])
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    conf, lvl = confidence(r2, len(ov), smoothed=unsmooth)
+    meta = {"beta": round(beta, 3), "alpha": round(a_net, 6), "resid": round(resid, 5),
+            "r2": round(r2, 3), "n_overlap": len(ov), "confiance": conf, "niveau": lvl,
+            "debut_reel": str(cutoff.date()) if hasattr(cutoff, "date") else str(cutoff)}
+    return out, meta
+
+
 def couple_basket(factors_fine, weights, fee_annual=0.0, realized_annual=None,
                   ppy=WK):
     """Reconstruit la série longue à partir d'un panier ajusté (weights) appliqué

@@ -42,6 +42,52 @@ def alloc_bars(result):
     return out + f'<div class="legend" style="margin-top:10px">{leg}</div>'
 
 
+def alloc_tables(result):
+    """Allocation COMPLÈTE ligne par ligne (poids + stats élémentaires) par
+    portefeuille — contrat actuel ET optimale. Repli sur les barres si le JSON
+    n'a pas le détail `lignes`."""
+    ports = result["portefeuilles"]
+    assets = []
+    for p in ports.values():
+        for l in (p.get("lignes") or []):
+            if l["label"] not in assets:
+                assets.append(l["label"])
+    colors = {a: bd.ASSET_COLORS[i % len(bd.ASSET_COLORS)] for i, a in enumerate(assets)}
+    out = ""
+    for nm, p in ports.items():
+        lignes = p.get("lignes")
+        if not lignes:
+            continue
+        s = p["in_sample"]
+        bar = "".join(f'<div title="{l["label"]} {l["poids"]*100:.1f}%" '
+                      f'style="width:{l["poids"]*100:.2f}%;background:{colors[l["label"]]}"></div>' for l in lignes)
+        def _cell(l):
+            isin = f'<span class="isin">{l["isin"]}</span>' if l.get("isin") else ""
+            src = l.get("source")
+            cls = ("src-real" if src and src.startswith("réel") else
+                   "src-recon" if src == "reconstruit" else "src-model")
+            tag = f'<span class="src {cls}">{src}</span>' if src else ""
+            return (f'<tr><td class="nm"><i style="background:{colors[l["label"]]}"></i>'
+                    f'<span class="uc">{l["label"]}</span>{isin}{tag}</td>'
+                    f'<td class="w">{l["poids"]*100:.1f} %</td>'
+                    f'<td>{bd.pct(l["cagr"])}</td>'
+                    f'<td>{l["vol"]*100:.1f} %</td>'
+                    f'<td>{ddfmt(l["maxdd"])}</td></tr>')
+        rows = "".join(_cell(l) for l in lignes)
+        out += (f'<div class="al-block"><div class="al-h" style="color:{p.get("color","#334155")}">{nm}'
+                f'<span>{bd.pct(s["cagr"])}/an · perte max {ddfmt(s["max_drawdown"])} · {len(lignes)} lignes</span></div>'
+                f'<div class="al-bar">{bar}</div>'
+                f'<table class="alloc"><thead><tr><th>Ligne</th><th>Poids</th><th>Rendt/an</th>'
+                f'<th>Volatilité</th><th>Perte max</th></tr></thead><tbody>{rows}</tbody></table></div>')
+    if out:
+        out += ('<div class="alcap"><b>réel</b> = VL de marché du fonds (EODHD) · '
+                '<b>reconstruit</b> = UC illiquide sans VL de marché (OPCI/infra), exposition économique '
+                'calée sur le réalisé · <b>modélisé</b> = actif général assureur (fonds euros). '
+                'L\'allocation optimale est optimisée et affichée sur 100 % de vraies VL de fonds ; '
+                'le choix final doit rester dans les UC éligibles du contrat.</div>')
+    return out or alloc_bars(result)
+
+
 def metrics_table(result):
     cols = [("cagr", "Rendt/an"), ("vol", "Volatilité"), ("max_drawdown", "Perte max"),
             ("cdar95", "CDaR 95"), ("sharpe", "Sharpe"), ("calmar", "Calmar")]
@@ -82,7 +128,7 @@ def build(result):
         .replace("{{dd_reel}}", ddfmt(rv["drawdown_reel"])).replace("{{dd_releve}}", ddfmt(rv["drawdown_releve"])) \
         .replace("{{pts}}", f"+{op['pts_an']}").replace("{{euros}}", euros(op["euros_10ans"])) \
         .replace("{{perf}}", perf_svg).replace("{{under}}", under_svg) \
-        .replace("{{metrics}}", metrics_table(result)).replace("{{alloc}}", alloc_bars(result)) \
+        .replace("{{metrics}}", metrics_table(result)).replace("{{alloc}}", alloc_tables(result)) \
         .replace("{{mc}}", mc_block(result))
     charts = {"perf": perf_js, "under": under_js}
     script = "<script>const CHARTS=" + json.dumps(charts, ensure_ascii=False) + ";\n" + bd.HOVER_JS + "</script>"
@@ -103,6 +149,25 @@ EXTRA_CSS = """
 .mcg{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .mcg div{background:#f8fafc;border-radius:10px;padding:10px 12px}
 .mcg b{display:block;font-size:20px;color:#0d9488}.mcg span{font-size:11.5px;color:#64748b}
+.al-block{margin:6px 0 20px}
+.al-block .al-h{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;margin-bottom:7px}
+.al-block .al-h span{font-weight:400;font-size:12px;color:#64748b}
+.al-block .al-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;margin-bottom:10px}
+.al-block .al-bar div{height:100%}
+table.alloc{width:100%;border-collapse:collapse;font-size:13px}
+table.alloc th{text-align:right;color:#94a3b8;font-weight:500;font-size:11.5px;padding:5px 8px;border-bottom:1px solid #e9edf3}
+table.alloc th:first-child{text-align:left}
+table.alloc td{text-align:right;padding:6px 8px;border-bottom:1px solid #f1f5f9;font-variant-numeric:tabular-nums}
+table.alloc td.nm{text-align:left;color:#334155}
+table.alloc td.w{font-weight:600}
+table.alloc td.nm i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:8px;vertical-align:middle}
+table.alloc td.nm .uc{font-weight:500}
+table.alloc td.nm .isin{margin-left:8px;font-size:11px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.alcap{font-size:11.5px;color:#94a3b8;margin-top:10px;line-height:1.5}
+table.alloc td.nm .src{margin-left:8px;font-size:10px;padding:1px 6px;border-radius:6px;vertical-align:middle}
+.src-real{background:#e7f5ec;color:#15924E}
+.src-recon{background:#fdf0e3;color:#B45309}
+.src-model{background:#eef1f5;color:#64748b}
 """
 
 BODY = """
