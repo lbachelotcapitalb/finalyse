@@ -31,8 +31,11 @@ def stationary_bootstrap_paths(returns, horizon, n_sims=2000, mean_block=26, see
     return out
 
 
-def project(returns, horizon_years=10, n_sims=2000, mean_block=26, seed=7):
-    horizon = int(round(horizon_years * m.WEEKS))
+def project(returns, horizon_years=10, n_sims=2000, mean_block=26, seed=7, ppy=None):
+    """ppy = périodes/an des `returns` (52 hebdo par défaut, 252 en quotidien).
+    Le quotidien capture des queues plus fines pour le stochastique."""
+    ppy = ppy or m.WEEKS
+    horizon = int(round(horizon_years * ppy))
     paths = stationary_bootstrap_paths(returns, horizon, n_sims, mean_block, seed)
     terminal = np.prod(1.0 + paths, axis=1)             # multiple du capital
     mdd = np.array([m.max_drawdown(p) for p in paths])

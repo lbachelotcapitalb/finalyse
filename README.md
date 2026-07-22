@@ -9,6 +9,9 @@ walk-forward → projection Monte-Carlo probabilisée.
 Destiné à s'intégrer à **bWealthy** (front + MCP) pour simuler des allocations
 sur **CTO, PEA et assurance-vie (unités de compte)**.
 
+📖 **Documentation du modèle et du sourcing** (deux niveaux, novice + avancé) :
+[`docs/MODELE.md`](docs/MODELE.md).
+
 ## Statut — validé sur vraie donnée
 
 Moteur validé bout-en-bout (CDaR-LP, HRP, min-variance Ledoit-Wolf, frontière

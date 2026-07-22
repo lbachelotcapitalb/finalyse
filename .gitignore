@@ -2,7 +2,11 @@
 __pycache__/
 *.pyc
 result*.json
-frontend/dashboard.html
+frontend/*.html
 *.png
 .playwright-mcp/
 .env
+
+# données scrappées (Quantalys, sous licence) — jamais publiées
+data/
+scripts/quantalys_deep.py
