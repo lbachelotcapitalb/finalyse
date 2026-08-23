@@ -97,6 +97,27 @@ run.py            démo CLI
   l'app lit la base. `db/schema.sql` = schéma dédié `finalyse` (à loger dans le
   projet Supabase bwealthy — plafond free = 2 projets/compte).
 
+### ⚠️ `data/` est gitignoré — donc il n'est sauvegardé nulle part
+
+Les séries sont sous licence : `data/` ne part pas dans git, et c'est voulu. Le
+prix de ce choix a été payé le **23/08/2026** — la copie locale a disparu, et avec
+elle les trois listes screenées (`list_cto_robuste.csv` 201 · `list_pea.csv` 21 ·
+`list_av.csv` 150). Ni le VPS ni GitHub n'en avaient de copie, et sans elles
+`run_portfolios.py` et `run_contrats.py` ne démarrent pas.
+
+Ce qui a servi de sauvegarde sans avoir été conçu pour : le **résultat du dernier
+run**. Son bloc `actifs[]` est le miroir exact des lignes lues au run — même champs
+que le CSV d'entrée. Deux copies en vivent : `finalyse.portfolios` en base, et le
+repli embarqué du front bwealthy (`src/data/portfolios.json`), lui versionné.
+
+```bash
+python rebuild_lists.py --from-json ../bwealthy/src/data/portfolios.json
+```
+
+Ce que ça rend : les actifs **retenus** au dernier run (36 · 12 · 32). Ce que ça ne
+rend pas : l'univers **screené** (201 · 21 · 150) — le screening reste à rejouer
+(méthode en `docs/MODELE.md` § C.8, script perdu lui aussi).
+
 ## Mémoire d'amélioration
 
 Chaque run s'auto-enregistre dans `journal/experiments.jsonl` ; `INDEX.md` est un
