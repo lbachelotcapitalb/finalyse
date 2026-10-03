@@ -117,6 +117,17 @@ def test_short_series_does_not_truncate_window():
     assert ret.index.min().year == 2005 and [x["isin"] for x in exclus] == ["C"]
 
 
+def test_staggered_nav_days_keep_history():
+    """Deux fonds hebdo publiés des jours différents (lundi / vendredi)."""
+    from finalyse import data as D
+    mon = pd.date_range("2006-01-02", "2015-12-28", freq="W-MON")
+    fri = pd.date_range("2006-01-06", "2015-12-25", freq="W-FRI")
+    px = pd.DataFrame({"a": pd.Series(np.linspace(100, 150, len(mon)), index=mon),
+                       "b": pd.Series(np.linspace(100, 130, len(fri)), index=fri)})
+    w = D.common_window(px)
+    assert w.index.min().year == 2006 and len(w) > 400, (w.index.min(), len(w))
+
+
 if __name__ == "__main__":
     for name in [n for n in list(globals()) if n.startswith("test_")]:
         globals()[name]()

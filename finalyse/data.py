@@ -56,8 +56,17 @@ def load_prices(tickers: dict, pause: float = 0.4, verbose: bool = True) -> pd.D
 
 
 def common_window(px: pd.DataFrame) -> pd.DataFrame:
-    """Restreint à la fenêtre où TOUTES les séries existent (align. inner)."""
-    px = px.dropna(how="all")
+    """Restreint à la fenêtre où TOUTES les séries existent (align. inner).
+
+    Chaque série est d'abord prolongée de sa dernière valeur sur 7 lignes au plus :
+    des fonds qui publient leur VL des jours DIFFÉRENTS (hebdo le lundi, hebdo le
+    vendredi, calendriers fériés distincts) n'ont sinon AUCUNE date commune, et le
+    `dropna` effaçait des années entières (03/10/2026 : Fortuneo Vie démarrait en
+    12/2009 alors que ses 33 fonds existaient tous avant 02/2008). Le prolongement
+    ne crée aucune valeur : il reporte la dernière VL connue, comme le fait le
+    resample hebdo qui suit.
+    """
+    px = px.dropna(how="all").ffill(limit=7)
     first_valid = px.apply(lambda c: c.first_valid_index()).max()
     out = px.loc[first_valid:].dropna()
     return out
