@@ -176,7 +176,7 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
     return ret, kept
 
 
-def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None, expanding=False):
+def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None, expanding=True):
     """Optim CDaR sur une matrice de rendements EUR (pur, hors-réseau).
 
     Objectif principal : `min_cdar` (drawdown minimal, sans rendement espéré) —
@@ -221,9 +221,13 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None, expanding=False
     # On ré-estime les poids sur une fenêtre train, on les fige sur le test
     # suivant, on roule. Un min-CDaR qui exploite une série lisse in-sample voit
     # son drawdown RÉALISÉ hors-échantillon exploser : c'est là qu'on le démasque.
-    # Les PROFILS passent le même test : leur règle (rendement max sous perte max
-    # cible) est rejouée dans chaque pli. Le témoin 1/N dit ce que l'univers
-    # rapporte sans optimiseur.
+    # Les PROFILS passent le même test : leur règle est rejouée dans chaque pli.
+    # Le témoin 1/N dit ce que l'univers rapporte sans optimiseur.
+    # Fenêtre de train CROISSANTE par défaut (décision 03/10/2026) : la prod
+    # calibre sur tout l'historique, 2008 compris ; un train glissant de 5 ans
+    # sort 2008 dès 2013 et calibre les plis sur une période calme. Mesure du
+    # 03/10 : l'équilibré passe de 20,2 % à 14,9 % (CTO) et de 20,8 % à 15,0 %
+    # (AV) de perte réalisée pour 20 % de cible ; recommandations inchangées.
     T = len(ret)
     train = min(260, max(104, T // 2))
     test = 52 if T > 220 else max(20, T // 6)
