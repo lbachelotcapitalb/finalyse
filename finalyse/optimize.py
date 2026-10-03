@@ -196,9 +196,28 @@ def hrp(returns, wmax=None):
             nxt += [left, right]
         clusters = nxt
     w = w / w.sum()
-    if wmax:                                     # plafond optionnel + renormalisation
-        w = np.minimum(w, wmax)
-        w = w / w.sum()
+    if wmax:
+        w = cap_weights(w, wmax)
+    return w
+
+
+def cap_weights(w, cap):
+    """Plafonne chaque poids à `cap` en redistribuant l'excédent aux lignes
+    non plafonnées, au prorata de leur poids. Un simple min()+renormalisation
+    refait dépasser le plafond (la renormalisation regonfle tout le monde)."""
+    w = np.asarray(w, float).copy()
+    w = w / w.sum()
+    cap = max(cap, 1.0 / len(w))                 # plafond infaisable sinon
+    for _ in range(len(w) + 1):
+        over = w > cap + 1e-12
+        if not over.any():
+            break
+        excess = float((w[over] - cap).sum())
+        w[over] = cap
+        free = w < cap - 1e-12
+        if not free.any() or w[free].sum() <= 0:
+            break
+        w[free] += excess * w[free] / w[free].sum()
     return w
 
 
@@ -206,20 +225,25 @@ def hrp(returns, wmax=None):
 # Filet : min-variance Ledoit-Wolf (covariance shrinkée)
 # ----------------------------------------------------------------------------
 def min_variance_lw(returns, wmax=0.35):
-    """Min-variance long-only sur covariance Ledoit-Wolf (QP -> approché par LP
-    séquentiel évité : on résout le QP fermé puis on projette sur le simplexe
-    plafonné). Sert de repère 'variance' face au pilotage drawdown.
+    """Min-variance long-only plafonnée sur covariance Ledoit-Wolf : le vrai QP
+    (SLSQP), pas la projection de la solution non contrainte — une projection
+    n'est pas l'optimum du problème contraint. Repère 'variance' face au
+    pilotage drawdown.
     """
+    from scipy.optimize import minimize
     R = np.asarray(returns, float)
     lw = LedoitWolf().fit(R)
     cov = lw.covariance_
     n = cov.shape[0]
-    # min-var analytique non contraint puis projection simplexe plafonné
-    inv = np.linalg.pinv(cov)
-    ones = np.ones(n)
-    w = inv @ ones / (ones @ inv @ ones)
-    w = _project_capped_simplex(w, wmax)
-    return w, float(lw.shrinkage_)
+    cap = max(wmax, 1.0 / n)
+    w0 = np.full(n, 1.0 / n)
+    res = minimize(lambda w: w @ cov @ w, w0, jac=lambda w: 2 * cov @ w,
+                   bounds=[(0.0, cap)] * n,
+                   constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
+                   method="SLSQP", options={"ftol": 1e-12, "maxiter": 500})
+    w = res.x if res.success else _project_capped_simplex(w0, cap)
+    w = np.clip(w, 0, None)
+    return w / w.sum(), float(lw.shrinkage_)
 
 
 def _project_capped_simplex(v, cap):
@@ -238,3 +262,59 @@ def _project_capped_simplex(v, cap):
         w[free] += (1.0 - s) / free.sum()
         w = np.clip(w, 0, cap)
     return w / w.sum()
+
+
+# ----------------------------------------------------------------------------
+# Profil : le point de frontière qui tient une perte max cible
+# ----------------------------------------------------------------------------
+def profile_on_frontier(returns, target_maxdd, alpha=0.95, wmax=0.35, n_points=14,
+                        frontier=None):
+    """Parmi les points de la frontière dont le max drawdown (composé) reste
+    ≤ `target_maxdd`, prend le plus rentable. Même règle in-sample et dans
+    chaque pli du walk-forward — c'est ce qui rend le profil testable.
+
+    Renvoie (w, atteignable, maxdd). Si AUCUN point ne tient la cible, on rend
+    le portefeuille de drawdown minimal avec atteignable=False : le repli est
+    signalé, jamais muet.
+    """
+    from . import metrics as m
+    R = np.asarray(returns, float)
+    pts = frontier if frontier is not None else drawdown_frontier(
+        R, alpha=alpha, wmax=wmax, n_points=n_points)
+    best = None
+    for p in pts:
+        r = R @ p["weights"]
+        mdd, cg = m.max_drawdown(r), m.cagr(r)
+        if mdd <= target_maxdd and (best is None or cg > best[1]):
+            best = (p["weights"], cg, mdd)
+    if best is not None:
+        return best[0], True, best[2]
+    w, _ = min_cdar(R, alpha, wmax)
+    return w, False, m.max_drawdown(R @ w)
+
+
+# ----------------------------------------------------------------------------
+# Profil SANS prévision de rendement : mélange HRP (défensif) ↔ 1/N (offensif)
+# ----------------------------------------------------------------------------
+def profile_blend(returns, target_maxdd, marge=1.0, wmax=0.35, step=0.05):
+    """w = λ·HRP + (1−λ)·1/N. On prend le λ le plus PETIT (le plus de 1/N, le
+    plus rentable hors-échantillon sur nos runs) tel que perte max historique ×
+    marge ≤ cible. Aucun rendement espéré n'entre dans le choix — c'est ce qui
+    rendait les profils de frontière fragiles (moyenne historique = surajustement).
+
+    Renvoie (w, atteignable, maxdd_in_sample, lam). Si même 100 % HRP dépasse
+    la cible, atteignable=False (le profil n'est pas proposé).
+    """
+    from . import metrics as m
+    R = np.asarray(returns, float)
+    n = R.shape[1]
+    w_def = hrp(R, wmax=wmax)
+    w_off = np.full(n, 1.0 / n)
+    last = None
+    for lam in np.arange(0.0, 1.0 + 1e-9, step):
+        w = lam * w_def + (1.0 - lam) * w_off
+        mdd = m.max_drawdown(R @ w)
+        last = (w, mdd, float(lam))
+        if mdd * marge <= target_maxdd:
+            return w, True, mdd, float(lam)
+    return last[0], False, last[1], last[2]

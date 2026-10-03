@@ -237,13 +237,57 @@ La VL EODHD (`adjusted_close`) est **déjà nette des frais internes du fonds**.
 
 ### B.6 Validation walk-forward + contrôle d'honnêteté (`backtest.py`)
 
-`walk_forward` : estime les poids sur `train` semaines, les **fige** sur les `test` suivantes, roule (fenêtres adaptatives selon la profondeur). `honesty_check` compare le **CDaR in-sample moyen** au **max drawdown réalisé OOS moyen** :
+`walk_forward` : estime les poids sur `train` semaines, les **fige** sur les `test` suivantes, roule (fenêtres adaptatives selon la profondeur). Quatre familles passent ce test : `min_cdar`, `hrp`, **chaque profil** (sa règle « rendement max sous perte max cible » est rejouée dans chaque pli) et le **témoin 1/N** (`equipondere`), qui mesure ce que l'univers rapporte sans optimiseur.
+
+**Fenêtre de train croissante** (décision du 03/10/2026, `expanding=True`, défaut de `optimize_envelope` ; `run_portfolios.py --glissant` pour l'ancien mode). Chaque pli apprend sur **tout le passé** jusqu'à lui, au lieu des 260 dernières semaines. Les plis de test sont identiques ; seul le passé vu change. Motif : la prod calibre sur tout l'historique, 2008 compris, alors qu'un train glissant de 5 ans perd 2008 dès 2013. Le test jugeait donc une règle calibrée hors crise.
+
+| Run du 03/10 (perte max OOS · rendement OOS) | Glissant | Croissant |
+|---|---|---|
+| CTO équilibré (cible 20 %) | 20,2 % · 9,6 % ❌ | 14,9 % · 6,6 % ✅ |
+| AV équilibré (cible 20 %) | 20,8 % · 7,9 % ❌ | 15,0 % · 5,4 % ✅ |
+| CTO / AV dynamique (35 %) | 20,2 % / 20,8 % | 17,2 % / 19,7 % |
+| Recos CTO · PEA · AV | 1/N · min_cdar · 1/N | inchangées |
+
+Le prix : moins de rendement, car la part HRP monte (marge 1,33 au lieu de 1,20 en CTO). Le Calmar OOS des profils reste du même ordre (CTO équilibré 0,44 contre 0,48). Le contrat du profil, c'est la perte max : il est tenu. Prudent reste non proposé partout. En AV, `min_cdar` devient inéligible (ratio 1,52), sans effet sur la reco.
+
+`honesty_check` compare des pertes **de même horizon** (correction du 03/10/2026) :
 
 ```
-ratio_realise_sur_promesse = oos_maxdd_moyen / insample_cdar_moyen
+promesse_pli = moyenne des max drawdown des fenêtres glissantes de len(test) semaines DANS le train
+ratio_realise_sur_promesse = moyenne(max DD OOS des plis) / moyenne(promesse_pli)
+taux_depassement_p95       = part des plis dont le DD OOS dépasse le 95e centile promis (≈ 5 % attendu)
 ```
 
-`optimize_envelope` calcule ce ratio pour `min_cdar` et `hrp`, puis pose la **recommandation** : `min_cdar` **seulement s'il tient** (ratio ≤ 1,4 **ET** Calmar OOS ≥ celui de HRP) ; sinon repli sur `hrp`. Résultat sur le run réel : CTO → HRP, AV → HRP, PEA → min_cdar.
+La v1 divisait par le CDaR du train (5 ans) : une perte d'un an est mécaniquement plus petite, le ratio sortait ~2× trop bas (0,44 contre 0,97 sur des rendements i.i.d., `test_audit.py`). L'ancienne valeur reste tracée (`ancien_ratio_cdar_train`).
+
+**Recommandation** (décision du 03/10/2026) : `min_cdar`, `hrp` et le **1/N** (`equipondere`) sont en concurrence. Est éligible une méthode dont le ratio d'honnêteté est **mesuré et ≤ 1,4** ; on retient la meilleure en **Calmar hors-échantillon**. Aucune éligible → `hrp`. Le détail est dans `recommande_candidats`. Run du 03/10 : CTO → 1/N (Calmar OOS 0,52 contre 0,23), AV → 1/N (0,41 contre 0,31), PEA → `min_cdar`.
+
+**Marge de sécurité des profils** : la cible visée sur l'historique vaut `cible / marge`, où `marge` = **pire** ratio d'honnêteté des deux jambes HRP et 1/N (≥ 1). Le test OOS juge contre la **vraie** cible. Avec le train croissant, l'équilibré et le dynamique tiennent leur cible en CTO et en AV (tableau ci-dessus).
+
+**Profil inatteignable** (`propose: false`) : aucun point de frontière ne tient la cible. Il n'est ni affiché ni servi (ex. prudent et équilibré en PEA, univers 100 % actions).
+
+**Profils** : chacun porte `oos`, `honnetete`, `atteignable` (une cible qu'aucun point de frontière ne tient → repli `min_cdar` **signalé**), `tient_oos` (perte max OOS ≤ cible) et un `motif`. Depuis la v2, un profil = `λ·HRP + (1−λ)·1/N` : **aucune prévision de rendement**.
+
+**Avertissements** (`avertissements[]` par enveloppe) : fenêtre sans 2008, biais de sélection de l'univers, profils qui ne tiennent pas. Relayés tels quels par bWealthy.
+
+### B.6 bis Contrats d'assurance-vie : screening du menu (`menu_screen.py`, `run_contrats.py`)
+
+Le menu officiel d'un contrat (`finalyse.contrat_univers`, colonne `source` obligatoire) est **screené lui-même**, selon les critères du § C.8 :
+- historique avant `--max-start` (2008-03-31) ;
+- monétaires exclus ;
+- score composite calculé **dans** le menu ;
+- classe déduite du libellé ;
+- chaque rejet est motivé.
+
+L'ancien croisement avec `data/list_av.csv` est abandonné, car 23 de ses 32 fonds sont des fonds de pension britanniques (option `--intersect` pour le rejouer). Les cours du jour sont mis en cache disque (`data_eodhd.fetch_cached`).
+
+Menus chargés le 03/10/2026 :
+- Linxea Avenir 2, Fortuneo Vie, Puissance Avenir (Suravenir, 01/2026) ;
+- Boursorama Vie (annexe générée le jour même) ;
+- Lucya Cardif (03/2026) ;
+- Generali Himalia (12/2024).
+
+**Demandes de référencement** : la table `finalyse.demandes_referencement` est alimentée par l'écran bWealthy. `scripts/notify_demandes.py` (cron VPS, 07:30 UTC) envoie un mail récapitulatif à Léo, puis pose `notifie_at`.
 
 ### B.7 Définition des métriques (`metrics.py`)
 
@@ -377,6 +421,7 @@ Tests (aucun réseau) : `python test_fx.py && python test_currency.py && python 
 - **Frais AV forfaitaires** (0,8 %/an) : à remplacer par le taux réel du contrat quand on croise avec un menu assureur précis.
 - **Éligibilité par contrat** : croiser les 150 UC screenées avec le menu réel d'un contrat (ex. AXA Arpèges) pour un arbitrage interne actionnable.
 - **Exposition** : endpoint API + outil MCP bWealthy `optimiser_portefeuille(profil, budget_dd)` sur le contrat JSON.
+- **Biais de sélection** : l'univers est choisi sur l'historique complet (screening § C.8), puis réduit aux actifs retenus (`rebuild_lists.py`). Les tests OOS en héritent et sont optimistes ; seul un screening rejoué **à date** dans chaque pli le lèverait. Le témoin 1/N borne l'effet.
 - **v2** : Black-Litterman + Riskfolio-Lib.
 
 ---

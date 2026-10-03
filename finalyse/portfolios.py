@@ -105,7 +105,8 @@ def apply_annual_fee(ret, annual_fee):
 
 
 def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
-                     fetcher=None, annual_fee=0.0, verbose=True):
+                     fetcher=None, annual_fee=0.0, verbose=True,
+                     max_start=None, excluded=None):
     """rows: liste de dicts (lignes CSV). Renvoie (ret_df EUR, infos).
 
     Chaque actif : fetch cours → devise (catalogue, repli place) → EUR → colonne
@@ -113,6 +114,12 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
     (frais d'enveloppe, ex. AV) déduit. `fetcher(sym)->Series` et `fx_provider(ccy)
     ->Series` sont injectables (tests hors-réseau). `maps` = (by_isin, by_code) de
     currency.build_maps ; None = tout en devise de la place.
+
+    `max_start` (date ISO) : une série qui COMMENCE après cette date est écartée.
+    Sans ce garde, un seul actif à historique court tronque la fenêtre commune de
+    toute l'enveloppe (03/10/2026 : AEJ.PA réduit à 7 ans chez EODHD → CTO
+    passé de 2009 à 2019, crise de 2008 sortie du calcul, sans un mot).
+    Les écartés sont ajoutés à `excluded` (liste fournie par l'appelant).
     """
     import pandas as pd
 
@@ -137,6 +144,15 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
             if verbose:
                 print(f"  [skip] {sym}: série trop courte ({0 if px is None else len(px)} pts)")
             continue
+        if max_start is not None and str(px.index.min().date()) > max_start:
+            msg = (f"historique depuis {px.index.min().date()} > {max_start} "
+                   f"(tronquerait la fenêtre commune)")
+            if excluded is not None:
+                excluded.append({"symbol": sym, "isin": isin, "name": row.get("name", ""),
+                                 "motif": msg})
+            if verbose:
+                print(f"  [écarté] {sym}: {msg}")
+            continue
         ccy = None
         if maps is not None:
             ccy = C.resolve(isin=isin, code=code, maps=maps, default=None)
@@ -160,7 +176,7 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
     return ret, kept
 
 
-def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
+def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None, expanding=True):
     """Optim CDaR sur une matrice de rendements EUR (pur, hors-réseau).
 
     Objectif principal : `min_cdar` (drawdown minimal, sans rendement espéré) —
@@ -191,64 +207,128 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
                      "poids": wd(w_cdar), "in_sample": m.summary(pr(w_cdar), alpha)},
         "hrp": {"objectif": "le plus décorrélé (López de Prado)",
                 "poids": wd(w_hrp), "in_sample": m.summary(pr(w_hrp), alpha)},
+        "equipondere": {"objectif": "même poids sur chaque ligne (témoin 1/N, aucun paramètre estimé)",
+                        "poids": wd(np.full(len(keys), 1.0 / len(keys))),
+                        "in_sample": m.summary(pr(np.full(len(keys), 1.0 / len(keys))), alpha)},
     }
     # Frontière + profils de perte max cible
     frontier = opt.drawdown_frontier(R, alpha=alpha, wmax=wmax, n_points=14)
     out["frontiere"] = [{"cdar_budget": round(p["cdar_budget"], 4),
                          **m.summary(pr(p["weights"]), alpha)} for p in frontier]
     prof = profiles or {"prudent": 0.10, "equilibre": 0.20, "dynamique": 0.35}
-    out["profils"] = {}
-    for name, target in prof.items():
-        best = None
-        for p in frontier:
-            r = pr(p["weights"])
-            mdd, cg = m.max_drawdown(r), m.cagr(r)
-            if mdd <= target and (best is None or cg > best["_cg"]):
-                best = {"weights": p["weights"], "_cg": cg}
-        w = best["weights"] if best else w_cdar
-        out["profils"][name] = {"cible_maxdd": target, "poids": wd(w),
-                                "in_sample": m.summary(pr(w), alpha)}
 
     # --- Walk-forward OOS : le garde-fou anti-surajustement -------------------
     # On ré-estime les poids sur une fenêtre train, on les fige sur le test
     # suivant, on roule. Un min-CDaR qui exploite une série lisse in-sample voit
     # son drawdown RÉALISÉ hors-échantillon exploser : c'est là qu'on le démasque.
+    # Les PROFILS passent le même test : leur règle est rejouée dans chaque pli.
+    # Le témoin 1/N dit ce que l'univers rapporte sans optimiseur.
+    # Fenêtre de train CROISSANTE par défaut (décision 03/10/2026) : la prod
+    # calibre sur tout l'historique, 2008 compris ; un train glissant de 5 ans
+    # sort 2008 dès 2013 et calibre les plis sur une période calme. Mesure du
+    # 03/10 : l'équilibré passe de 20,2 % à 14,9 % (CTO) et de 20,8 % à 15,0 %
+    # (AV) de perte réalisée pour 20 % de cible ; recommandations inchangées.
     T = len(ret)
     train = min(260, max(104, T // 2))
     test = 52 if T > 220 else max(20, T // 6)
     oos_block, ratios = {}, {}
-    for method in ("min_cdar", "hrp"):
+    for method in ("min_cdar", "hrp", "equipondere"):
         oos, folds = bt.walk_forward(ret, method, train=train, test=test, step=test,
-                                     alpha=alpha, wmax=wmax)
+                                     alpha=alpha, wmax=wmax, expanding=expanding)
         entry = {"n_folds": len(folds),
                  "oos": m.summary(oos, alpha) if len(oos) > 3 else {}}
-        if method == "min_cdar":
-            entry["honnetete"] = bt.honesty_check(folds)
-            ratios[method] = (entry["honnetete"] or {}).get("ratio_realise_sur_promesse")
+        entry["honnetete"] = bt.honesty_check(folds)
+        ratios[method] = (entry["honnetete"] or {}).get("ratio_realise_sur_promesse")
         oos_block[method] = entry
-    out["walk_forward"] = {"train": train, "test": test, **oos_block}
+    out["walk_forward"] = {"train": train, "test": test,
+                           "fenetre_train": "croissante" if expanding else "glissante",
+                           **oos_block}
 
-    # Recommandation : min_cdar seulement s'il tient OOS (ratio réalisé/promesse
-    # ≤ 1,4 ET meilleur Calmar OOS que HRP) ; sinon HRP (robuste au bruit).
+    # Profils (décision Léo, 03/10/2026, v2) : mélange HRP ↔ 1/N, SANS prévision
+    # de rendement. La v1 prenait le point de frontière le plus rentable sous la
+    # cible, donc s'appuyait sur la moyenne historique : elle promettait 24,6 %/an
+    # en CTO équilibré et perdait 26 % hors-échantillon pour 20 % promis.
+    # Marge de sécurité : la perte max historique sous-estime la perte réalisée ;
+    # on prend le PIRE ratio d'honnêteté des deux jambes (HRP, 1/N), ≥ 1. C'est un
+    # seul scalaire tiré du walk-forward de l'enveloppe — fuite assumée et dite.
+    marge = max([1.0] + [r for r in (ratios.get("hrp"), ratios.get("equipondere")) if r])
+    out["profils"] = {}
+    for name, target in prof.items():
+        w, atteignable, mdd_is, lam = opt.profile_blend(R, target, marge=marge, wmax=wmax)
+        oos, folds = bt.walk_forward(ret, "profil_mix", train=train, test=test, step=test,
+                                     cdar_budget=marge, alpha=alpha, wmax=wmax,
+                                     target_maxdd=target, expanding=expanding)
+        oos_sum = m.summary(oos, alpha) if len(oos) > 3 else {}
+        hon = bt.honesty_check(folds)
+        oos_mdd = oos_sum.get("max_drawdown")
+        tient = bool(atteignable and oos_mdd is not None and oos_mdd <= target)
+        if not atteignable:
+            motif = (f"cible {target:.0%} inatteignable sur cet univers (perte max la plus "
+                     f"basse possible : {mdd_is:.1%}, marge {marge:.2f}) — profil non proposé")
+        elif oos_mdd is None:
+            motif = "pas assez d'historique pour un test hors-échantillon"
+        elif tient:
+            motif = f"tient hors-échantillon : perte max réalisée {oos_mdd:.1%} ≤ cible {target:.0%}"
+        else:
+            motif = (f"NE TIENT PAS hors-échantillon : perte max réalisée {oos_mdd:.1%} "
+                     f"> cible {target:.0%}")
+        out["profils"][name] = {"cible_maxdd": target, "poids": wd(w),
+                                "in_sample": m.summary(pr(w), alpha),
+                                "construction": f"{lam:.0%} HRP + {1 - lam:.0%} 1/N",
+                                "part_hrp": round(lam, 2),
+                                "cible_effective": round(target / marge, 4),
+                                "marge_securite": round(marge, 2),
+                                "atteignable": atteignable,
+                                "propose": atteignable,
+                                "oos": oos_sum, "honnetete": hon,
+                                "tient_oos": tient, "motif": motif}
+    out["walk_forward"]["profils"] = {k: v["oos"] for k, v in out["profils"].items()}
+
+    # Recommandation (décision Léo, 03/10/2026) : concurrence entre min_cdar, HRP
+    # et le témoin 1/N. Est éligible une méthode dont l'honnêteté est MESURÉE et
+    # ≤ 1,4 (drawdown réalisé ≤ 1,4 × promis, à horizon égal) ; on retient la
+    # meilleure en Calmar hors-échantillon. Aucune éligible → HRP (échec fermé).
     def _oos_calmar(meth):
         return (oos_block.get(meth, {}).get("oos") or {}).get("calmar")
-    c_cdar, c_hrp = _oos_calmar("min_cdar"), _oos_calmar("hrp")
-    ratio = ratios.get("min_cdar")
-    ratio_ok = ratio is None or ratio <= 1.4
-    calmar_ok = c_cdar is not None and (c_hrp is None or c_cdar >= c_hrp)
-    cdar_tient = ratio_ok and calmar_ok
-    if cdar_tient:
-        motif = "min_cdar tient hors-échantillon (drawdown réalisé ≈ promesse, Calmar OOS ≥ HRP)"
-    elif not ratio_ok:
-        motif = (f"min_cdar surajuste : drawdown réalisé/promesse={ratio} (>1,4) "
-                 f"→ repli HRP décorrélé")
+    noms = {"min_cdar": "min_cdar", "hrp": "HRP", "equipondere": "1/N"}
+    eligibles = {k: _oos_calmar(k) for k in ("min_cdar", "hrp", "equipondere")
+                 if ratios.get(k) is not None and ratios[k] <= 1.4
+                 and _oos_calmar(k) is not None and np.isfinite(_oos_calmar(k))}
+    if eligibles:
+        reco = max(eligibles, key=eligibles.get)
+        autres = ", ".join(f"{noms[k]} {v:.2f}" for k, v in eligibles.items() if k != reco)
+        motif = (f"{noms[reco]} : meilleur Calmar hors-échantillon ({eligibles[reco]:.2f}"
+                 f"{' contre ' + autres if autres else ''}), drawdown réalisé ≈ promesse")
     else:
-        motif = (f"min_cdar moins robuste OOS (Calmar {c_cdar} < HRP {c_hrp}) "
-                 f"→ repli HRP décorrélé")
-    reco = "min_cdar" if cdar_tient else "hrp"
+        reco = "hrp"
+        motif = ("aucune méthode ne tient sa promesse de drawdown hors-échantillon "
+                 "(ratio > 1,4 ou non mesurable) → repli HRP décorrélé")
+    out["recommande_candidats"] = {k: {"calmar_oos": _oos_calmar(k), "ratio": ratios.get(k),
+                                       "eligible": k in eligibles}
+                                   for k in ("min_cdar", "hrp", "equipondere")}
     out["recommande"] = {"methode": reco, "motif": motif,
                          "poids": out[reco]["poids"]}
+    out["avertissements"] = envelope_warnings(out)
     return out
+
+
+def envelope_warnings(res):
+    """Ce qu'un lecteur doit savoir AVANT de croire les chiffres. Texte, une
+    ligne par réserve ; consommé tel quel par bWealthy."""
+    av = []
+    f = res["fenetre"]
+    if f["start"] > "2008-09-01":
+        av.append(f"Historique depuis {f['start']} ({f['annees']} ans) : la crise de 2008 "
+                  f"n'est pas dans la fenêtre, les pertes max sont probablement sous-estimées.")
+    av.append("Univers choisi sur l'historique complet (screening) : les tests hors-échantillon "
+              "héritent de ce choix et sont optimistes. Le témoin 1/N mesure ce que l'univers "
+              "rapporte seul.")
+    for name, p in res.get("profils", {}).items():
+        if p.get("propose") is False:
+            av.append(f"Profil {name} non proposé : {p.get('motif')}.")
+        elif not p.get("tient_oos"):
+            av.append(f"Profil {name} : {p.get('motif')}.")
+    return av
 
 
 def select_candidates(rows, per_class=4, score_key="score", min_years=None):
