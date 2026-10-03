@@ -249,11 +249,34 @@ taux_depassement_p95       = part des plis dont le DD OOS dépasse le 95e centil
 
 La v1 divisait par le CDaR du train (5 ans) : une perte d'un an est mécaniquement plus petite, le ratio sortait ~2× trop bas (0,44 contre 0,97 sur des rendements i.i.d., `test_audit.py`). L'ancienne valeur reste tracée (`ancien_ratio_cdar_train`).
 
-**Recommandation** : `min_cdar` **seulement s'il tient** (ratio ≤ 1,4 **ET** Calmar OOS ≥ HRP) ; sinon `hrp`. Un ratio **non mesurable** vaut échec (repli HRP), plus validation par défaut.
+**Recommandation** (décision du 03/10/2026) : `min_cdar`, `hrp` et le **1/N** (`equipondere`) sont en concurrence. Est éligible une méthode dont le ratio d'honnêteté est **mesuré et ≤ 1,4** ; on retient la meilleure en **Calmar hors-échantillon**. Aucune éligible → `hrp`. Le détail est dans `recommande_candidats`. Run du 03/10 : CTO → 1/N (Calmar OOS 0,52 contre 0,23), AV → 1/N (0,41 contre 0,31), PEA → `min_cdar`.
+
+**Marge de sécurité des profils** : la cible visée sur l'historique vaut `cible / marge`, où `marge` = ratio d'honnêteté de `min_cdar` (≥ 1). Le test OOS juge contre la **vraie** cible. La marge vient de `min_cdar` et non du profil, pour ne pas apprendre sur le test. Run du 03/10 : elle ne suffit pas. Équilibré CTO/AV et prudent AV dépassent encore leur cible hors-échantillon, et le payload le dit.
+
+**Profil inatteignable** (`propose: false`) : aucun point de frontière ne tient la cible. Il n'est ni affiché ni servi (ex. prudent et équilibré en PEA, univers 100 % actions).
 
 **Profils** : chacun porte `oos`, `honnetete`, `atteignable` (une cible qu'aucun point de frontière ne tient → repli `min_cdar` **signalé**), `tient_oos` (perte max OOS ≤ cible) et un `motif`. Attention : les profils, eux, **estiment un rendement** (moyenne historique) — c'est précisément pourquoi leur test OOS est obligatoire.
 
 **Avertissements** (`avertissements[]` par enveloppe) : fenêtre sans 2008, biais de sélection de l'univers, profils qui ne tiennent pas. Relayés tels quels par bWealthy.
+
+### B.6 bis Contrats d'assurance-vie : screening du menu (`menu_screen.py`, `run_contrats.py`)
+
+Le menu officiel d'un contrat (`finalyse.contrat_univers`, colonne `source` obligatoire) est **screené lui-même**, selon les critères du § C.8 :
+- historique avant `--max-start` (2008-03-31) ;
+- monétaires exclus ;
+- score composite calculé **dans** le menu ;
+- classe déduite du libellé ;
+- chaque rejet est motivé.
+
+L'ancien croisement avec `data/list_av.csv` est abandonné, car 23 de ses 32 fonds sont des fonds de pension britanniques (option `--intersect` pour le rejouer). Les cours du jour sont mis en cache disque (`data_eodhd.fetch_cached`).
+
+Menus chargés le 03/10/2026 :
+- Linxea Avenir 2, Fortuneo Vie, Puissance Avenir (Suravenir, 01/2026) ;
+- Boursorama Vie (annexe générée le jour même) ;
+- Lucya Cardif (03/2026) ;
+- Generali Himalia (12/2024).
+
+**Demandes de référencement** : la table `finalyse.demandes_referencement` est alimentée par l'écran bWealthy. `scripts/notify_demandes.py` (cron VPS, 07:30 UTC) envoie un mail récapitulatif à Léo, puis pose `notifie_at`.
 
 ### B.7 Définition des métriques (`metrics.py`)
 
