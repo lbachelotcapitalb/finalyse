@@ -152,6 +152,16 @@ def test_profile_safety_margin():
         assert p["propose"] == p["atteignable"]
 
 
+def test_profiles_blend_without_mu():
+    """v2 : mélange HRP ↔ 1/N. Plus la cible est basse, plus la part HRP monte."""
+    res = P.optimize_envelope(_iid(seed=13), wmax=0.5)
+    parts = [res["profils"][k]["part_hrp"] for k in ("prudent", "equilibre", "dynamique")
+             if res["profils"][k]["propose"]]
+    assert parts == sorted(parts, reverse=True), parts
+    for p in res["profils"].values():
+        assert "HRP" in p["construction"] and "1/N" in p["construction"]
+
+
 if __name__ == "__main__":
     for name in [n for n in list(globals()) if n.startswith("test_")]:
         globals()[name]()

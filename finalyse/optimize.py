@@ -291,3 +291,30 @@ def profile_on_frontier(returns, target_maxdd, alpha=0.95, wmax=0.35, n_points=1
         return best[0], True, best[2]
     w, _ = min_cdar(R, alpha, wmax)
     return w, False, m.max_drawdown(R @ w)
+
+
+# ----------------------------------------------------------------------------
+# Profil SANS prévision de rendement : mélange HRP (défensif) ↔ 1/N (offensif)
+# ----------------------------------------------------------------------------
+def profile_blend(returns, target_maxdd, marge=1.0, wmax=0.35, step=0.05):
+    """w = λ·HRP + (1−λ)·1/N. On prend le λ le plus PETIT (le plus de 1/N, le
+    plus rentable hors-échantillon sur nos runs) tel que perte max historique ×
+    marge ≤ cible. Aucun rendement espéré n'entre dans le choix — c'est ce qui
+    rendait les profils de frontière fragiles (moyenne historique = surajustement).
+
+    Renvoie (w, atteignable, maxdd_in_sample, lam). Si même 100 % HRP dépasse
+    la cible, atteignable=False (le profil n'est pas proposé).
+    """
+    from . import metrics as m
+    R = np.asarray(returns, float)
+    n = R.shape[1]
+    w_def = hrp(R, wmax=wmax)
+    w_off = np.full(n, 1.0 / n)
+    last = None
+    for lam in np.arange(0.0, 1.0 + 1e-9, step):
+        w = lam * w_def + (1.0 - lam) * w_off
+        mdd = m.max_drawdown(R @ w)
+        last = (w, mdd, float(lam))
+        if mdd * marge <= target_maxdd:
+            return w, True, mdd, float(lam)
+    return last[0], False, last[1], last[2]

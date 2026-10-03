@@ -17,8 +17,11 @@ from . import metrics as m
 
 
 def _weights_for(method, R_train, cdar_budget, alpha, wmax, target_maxdd=None):
-    if method == "profil":
+    if method == "profil":                              # v1 : point de frontière (μ historique)
         w, _, _ = opt.profile_on_frontier(R_train, target_maxdd, alpha=alpha, wmax=wmax)
+        return w
+    if method == "profil_mix":                          # v2 : HRP ↔ 1/N, sans μ
+        w, _, _, _ = opt.profile_blend(R_train, target_maxdd, marge=cdar_budget, wmax=wmax)
         return w
     if method == "equipondere":                         # témoin 1/N
         return np.full(R_train.shape[1], 1.0 / R_train.shape[1])

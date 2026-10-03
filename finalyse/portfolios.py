@@ -238,27 +238,27 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
         oos_block[method] = entry
     out["walk_forward"] = {"train": train, "test": test, **oos_block}
 
-    # Marge de sécurité des profils (décision Léo, 03/10/2026). Sur l'historique,
-    # la perte max est sous-estimée : le ratio réalisé/promis de min_cdar, mesuré
-    # à horizon égal, dit de combien sur CET univers. On vise donc, in-sample,
-    # cible / marge — et le test hors-échantillon juge contre la VRAIE cible.
-    # La marge vient de min_cdar, pas du profil lui-même : la calibrer sur le
-    # résultat OOS du profil reviendrait à apprendre sur le test.
-    marge = max(1.0, ratios.get("min_cdar") or 1.0)
+    # Profils (décision Léo, 03/10/2026, v2) : mélange HRP ↔ 1/N, SANS prévision
+    # de rendement. La v1 prenait le point de frontière le plus rentable sous la
+    # cible, donc s'appuyait sur la moyenne historique : elle promettait 24,6 %/an
+    # en CTO équilibré et perdait 26 % hors-échantillon pour 20 % promis.
+    # Marge de sécurité : la perte max historique sous-estime la perte réalisée ;
+    # on prend le PIRE ratio d'honnêteté des deux jambes (HRP, 1/N), ≥ 1. C'est un
+    # seul scalaire tiré du walk-forward de l'enveloppe — fuite assumée et dite.
+    marge = max([1.0] + [r for r in (ratios.get("hrp"), ratios.get("equipondere")) if r])
     out["profils"] = {}
     for name, target in prof.items():
-        cible_eff = target / marge
-        w, atteignable, mdd_is = opt.profile_on_frontier(
-            R, cible_eff, alpha=alpha, wmax=wmax, frontier=frontier)
-        oos, folds = bt.walk_forward(ret, "profil", train=train, test=test, step=test,
-                                     alpha=alpha, wmax=wmax, target_maxdd=cible_eff)
+        w, atteignable, mdd_is, lam = opt.profile_blend(R, target, marge=marge, wmax=wmax)
+        oos, folds = bt.walk_forward(ret, "profil_mix", train=train, test=test, step=test,
+                                     cdar_budget=marge, alpha=alpha, wmax=wmax,
+                                     target_maxdd=target)
         oos_sum = m.summary(oos, alpha) if len(oos) > 3 else {}
         hon = bt.honesty_check(folds)
         oos_mdd = oos_sum.get("max_drawdown")
         tient = bool(atteignable and oos_mdd is not None and oos_mdd <= target)
         if not atteignable:
             motif = (f"cible {target:.0%} inatteignable sur cet univers (perte max la plus "
-                     f"basse possible : {mdd_is:.1%}) — profil non proposé")
+                     f"basse possible : {mdd_is:.1%}, marge {marge:.2f}) — profil non proposé")
         elif oos_mdd is None:
             motif = "pas assez d'historique pour un test hors-échantillon"
         elif tient:
@@ -268,7 +268,9 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
                      f"> cible {target:.0%}")
         out["profils"][name] = {"cible_maxdd": target, "poids": wd(w),
                                 "in_sample": m.summary(pr(w), alpha),
-                                "cible_effective": round(cible_eff, 4),
+                                "construction": f"{lam:.0%} HRP + {1 - lam:.0%} 1/N",
+                                "part_hrp": round(lam, 2),
+                                "cible_effective": round(target / marge, 4),
                                 "marge_securite": round(marge, 2),
                                 "atteignable": atteignable,
                                 "propose": atteignable,
