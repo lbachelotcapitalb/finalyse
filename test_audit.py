@@ -128,6 +128,30 @@ def test_staggered_nav_days_keep_history():
     assert w.index.min().year == 2006 and len(w) > 400, (w.index.min(), len(w))
 
 
+def test_reco_competition_includes_1n():
+    """Univers où le 1/N domine (actifs i.i.d. de même loi) : il doit pouvoir gagner."""
+    rng = np.random.default_rng(11)
+    R = rng.normal(0.0015, 0.02, (900, 6))
+    ret = pd.DataFrame(R, index=pd.date_range("2001-01-05", periods=900, freq="W-FRI"),
+                       columns=[f"A{i}" for i in range(6)])
+    res = P.optimize_envelope(ret, wmax=0.5)
+    c = res["recommande_candidats"]
+    assert set(c) == {"min_cdar", "hrp", "equipondere"}
+    elig = {k: v["calmar_oos"] for k, v in c.items() if v["eligible"]}
+    if elig:
+        assert res["recommande"]["methode"] == max(elig, key=elig.get)
+    assert res["equipondere"]["poids"] and abs(sum(res["equipondere"]["poids"].values()) - 1) < 1e-3
+
+
+def test_profile_safety_margin():
+    res = P.optimize_envelope(_iid(seed=12), wmax=0.5)
+    marge = res["profils"]["equilibre"]["marge_securite"]
+    assert marge >= 1.0
+    for p in res["profils"].values():
+        assert abs(p["cible_effective"] - p["cible_maxdd"] / marge) < 1e-3
+        assert p["propose"] == p["atteignable"]
+
+
 if __name__ == "__main__":
     for name in [n for n in list(globals()) if n.startswith("test_")]:
         globals()[name]()

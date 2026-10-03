@@ -82,7 +82,7 @@ def main():
 
     def fetcher(sym):                       # mémoïsé : screening puis chargement
         if sym not in _px:
-            _px[sym] = DE._fetch_one(sym, tok, start="1999-01-01")
+            _px[sym] = DE.fetch_cached(sym, tok, start="1999-01-01")
         return _px[sym]
     contrats = _sb("GET", "contrats?select=code,nom&actif=is.true&order=code")
     if args.contrat:

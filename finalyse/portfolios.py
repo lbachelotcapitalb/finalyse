@@ -207,6 +207,9 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
                      "poids": wd(w_cdar), "in_sample": m.summary(pr(w_cdar), alpha)},
         "hrp": {"objectif": "le plus décorrélé (López de Prado)",
                 "poids": wd(w_hrp), "in_sample": m.summary(pr(w_hrp), alpha)},
+        "equipondere": {"objectif": "même poids sur chaque ligne (témoin 1/N, aucun paramètre estimé)",
+                        "poids": wd(np.full(len(keys), 1.0 / len(keys))),
+                        "in_sample": m.summary(pr(np.full(len(keys), 1.0 / len(keys))), alpha)},
     }
     # Frontière + profils de perte max cible
     frontier = opt.drawdown_frontier(R, alpha=alpha, wmax=wmax, n_points=14)
@@ -230,25 +233,32 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
                                      alpha=alpha, wmax=wmax)
         entry = {"n_folds": len(folds),
                  "oos": m.summary(oos, alpha) if len(oos) > 3 else {}}
-        if method != "equipondere":
-            entry["honnetete"] = bt.honesty_check(folds)
-            ratios[method] = (entry["honnetete"] or {}).get("ratio_realise_sur_promesse")
+        entry["honnetete"] = bt.honesty_check(folds)
+        ratios[method] = (entry["honnetete"] or {}).get("ratio_realise_sur_promesse")
         oos_block[method] = entry
     out["walk_forward"] = {"train": train, "test": test, **oos_block}
 
+    # Marge de sécurité des profils (décision Léo, 03/10/2026). Sur l'historique,
+    # la perte max est sous-estimée : le ratio réalisé/promis de min_cdar, mesuré
+    # à horizon égal, dit de combien sur CET univers. On vise donc, in-sample,
+    # cible / marge — et le test hors-échantillon juge contre la VRAIE cible.
+    # La marge vient de min_cdar, pas du profil lui-même : la calibrer sur le
+    # résultat OOS du profil reviendrait à apprendre sur le test.
+    marge = max(1.0, ratios.get("min_cdar") or 1.0)
     out["profils"] = {}
     for name, target in prof.items():
+        cible_eff = target / marge
         w, atteignable, mdd_is = opt.profile_on_frontier(
-            R, target, alpha=alpha, wmax=wmax, frontier=frontier)
+            R, cible_eff, alpha=alpha, wmax=wmax, frontier=frontier)
         oos, folds = bt.walk_forward(ret, "profil", train=train, test=test, step=test,
-                                     alpha=alpha, wmax=wmax, target_maxdd=target)
+                                     alpha=alpha, wmax=wmax, target_maxdd=cible_eff)
         oos_sum = m.summary(oos, alpha) if len(oos) > 3 else {}
         hon = bt.honesty_check(folds)
         oos_mdd = oos_sum.get("max_drawdown")
         tient = bool(atteignable and oos_mdd is not None and oos_mdd <= target)
         if not atteignable:
-            motif = (f"cible {target:.0%} inatteignable sur cet univers : repli sur le "
-                     f"drawdown minimal (perte max {mdd_is:.1%})")
+            motif = (f"cible {target:.0%} inatteignable sur cet univers (perte max la plus "
+                     f"basse possible : {mdd_is:.1%}) — profil non proposé")
         elif oos_mdd is None:
             motif = "pas assez d'historique pour un test hors-échantillon"
         elif tient:
@@ -258,32 +268,36 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
                      f"> cible {target:.0%}")
         out["profils"][name] = {"cible_maxdd": target, "poids": wd(w),
                                 "in_sample": m.summary(pr(w), alpha),
+                                "cible_effective": round(cible_eff, 4),
+                                "marge_securite": round(marge, 2),
                                 "atteignable": atteignable,
+                                "propose": atteignable,
                                 "oos": oos_sum, "honnetete": hon,
                                 "tient_oos": tient, "motif": motif}
     out["walk_forward"]["profils"] = {k: v["oos"] for k, v in out["profils"].items()}
 
-    # Recommandation : min_cdar seulement s'il tient OOS (ratio réalisé/promesse
-    # à horizon égal ≤ 1,4 ET meilleur Calmar OOS que HRP) ; sinon HRP. Un ratio
-    # NON MESURÉ ne vaut pas validation : on se replie (échec fermé).
+    # Recommandation (décision Léo, 03/10/2026) : concurrence entre min_cdar, HRP
+    # et le témoin 1/N. Est éligible une méthode dont l'honnêteté est MESURÉE et
+    # ≤ 1,4 (drawdown réalisé ≤ 1,4 × promis, à horizon égal) ; on retient la
+    # meilleure en Calmar hors-échantillon. Aucune éligible → HRP (échec fermé).
     def _oos_calmar(meth):
         return (oos_block.get(meth, {}).get("oos") or {}).get("calmar")
-    c_cdar, c_hrp = _oos_calmar("min_cdar"), _oos_calmar("hrp")
-    ratio = ratios.get("min_cdar")
-    ratio_ok = ratio is not None and ratio <= 1.4
-    calmar_ok = c_cdar is not None and (c_hrp is None or c_cdar >= c_hrp)
-    cdar_tient = ratio_ok and calmar_ok
-    if cdar_tient:
-        motif = "min_cdar tient hors-échantillon (drawdown réalisé ≈ promesse, Calmar OOS ≥ HRP)"
-    elif ratio is None:
-        motif = "honnêteté de min_cdar non mesurable (historique trop court) → repli HRP décorrélé"
-    elif not ratio_ok:
-        motif = (f"min_cdar surajuste : drawdown réalisé/promesse={ratio} (>1,4) "
-                 f"→ repli HRP décorrélé")
+    noms = {"min_cdar": "min_cdar", "hrp": "HRP", "equipondere": "1/N"}
+    eligibles = {k: _oos_calmar(k) for k in ("min_cdar", "hrp", "equipondere")
+                 if ratios.get(k) is not None and ratios[k] <= 1.4
+                 and _oos_calmar(k) is not None and np.isfinite(_oos_calmar(k))}
+    if eligibles:
+        reco = max(eligibles, key=eligibles.get)
+        autres = ", ".join(f"{noms[k]} {v:.2f}" for k, v in eligibles.items() if k != reco)
+        motif = (f"{noms[reco]} : meilleur Calmar hors-échantillon ({eligibles[reco]:.2f}"
+                 f"{' contre ' + autres if autres else ''}), drawdown réalisé ≈ promesse")
     else:
-        motif = (f"min_cdar moins robuste OOS (Calmar {c_cdar} < HRP {c_hrp}) "
-                 f"→ repli HRP décorrélé")
-    reco = "min_cdar" if cdar_tient else "hrp"
+        reco = "hrp"
+        motif = ("aucune méthode ne tient sa promesse de drawdown hors-échantillon "
+                 "(ratio > 1,4 ou non mesurable) → repli HRP décorrélé")
+    out["recommande_candidats"] = {k: {"calmar_oos": _oos_calmar(k), "ratio": ratios.get(k),
+                                       "eligible": k in eligibles}
+                                   for k in ("min_cdar", "hrp", "equipondere")}
     out["recommande"] = {"methode": reco, "motif": motif,
                          "poids": out[reco]["poids"]}
     out["avertissements"] = envelope_warnings(out)
@@ -302,7 +316,9 @@ def envelope_warnings(res):
               "héritent de ce choix et sont optimistes. Le témoin 1/N mesure ce que l'univers "
               "rapporte seul.")
     for name, p in res.get("profils", {}).items():
-        if not p.get("tient_oos"):
+        if p.get("propose") is False:
+            av.append(f"Profil {name} non proposé : {p.get('motif')}.")
+        elif not p.get("tient_oos"):
             av.append(f"Profil {name} : {p.get('motif')}.")
     return av
 

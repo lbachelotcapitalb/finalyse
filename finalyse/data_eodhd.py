@@ -129,3 +129,35 @@ def coverage_check(isins, kind="EUFUND", start="2015-01-01"):
             out[isin] = {"ok": False, "erreur": str(e)[:80]}
         time.sleep(0.15)
     return out
+
+
+def fetch_cached(sym, token, start="1999-01-01", cache_dir=None):
+    """`_fetch_one` avec cache disque du JOUR (~/.cache/finalyse/eod/AAAA-MM-JJ/).
+
+    Un batch de contrats interroge des milliers de fonds ; un second passage le
+    même jour (relance après correctif) relit le disque au lieu de l'API. Le
+    dossier est daté : le lendemain, tout se re-télécharge — pas de cours périmé.
+    Un 404 (symbole inconnu) est mémorisé aussi ; une erreur passagère, jamais.
+    """
+    import datetime as _dt
+    import pickle
+    root = cache_dir or os.path.join(os.path.expanduser("~"), ".cache", "finalyse", "eod",
+                                     _dt.date.today().isoformat())
+    os.makedirs(root, exist_ok=True)
+    f = os.path.join(root, f"{sym.replace('/', '_')}__{start}.pkl")
+    if os.path.exists(f):
+        with open(f, "rb") as fh:
+            val = pickle.load(fh)
+        if isinstance(val, Exception):
+            raise val
+        return val
+    try:
+        val = _fetch_one(sym, token, start=start)
+    except Exception as e:  # noqa: BLE001
+        if "HTTP 404" in str(e):        # symbole inconnu : définitif. Un timeout, lui, se rejoue.
+            with open(f, "wb") as fh:
+                pickle.dump(RuntimeError(str(e)), fh)
+        raise
+    with open(f, "wb") as fh:
+        pickle.dump(val, fh)
+    return val
