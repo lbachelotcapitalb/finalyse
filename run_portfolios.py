@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--av-only", action="store_true")
     ap.add_argument("--max-start", default="2008-03-31",
                     help="CTO/AV : écarte une série qui commence après (listes « couvrant 2008 »)")
+    ap.add_argument("--expanding", action="store_true",
+                    help="walk-forward à fenêtre de train croissante (défaut : glissante)")
     ap.add_argument("--out", default="result_portfolios.json")
     args = ap.parse_args()
 
@@ -88,7 +90,7 @@ def main():
         if fee:
             print(f"  frais contrat AV {fee:.2%}/an déduits (net d'enveloppe).")
         print(f"  {len(kept)} actifs retenus, dont {n_non_eur} non-EUR convertis.")
-        res = P.optimize_envelope(ret, wmax=args.wmax)
+        res = P.optimize_envelope(ret, wmax=args.wmax, expanding=args.expanding)
         res["actifs"] = kept
         res["exclus_historique_court"] = exclus
         for x in exclus:

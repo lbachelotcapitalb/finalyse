@@ -49,9 +49,13 @@ def rolling_maxdd(r, window):
 
 
 def walk_forward(returns, method, train=260, test=52, step=52,
-                 cdar_budget=0.10, alpha=0.95, wmax=0.35, target_maxdd=None):
+                 cdar_budget=0.10, alpha=0.95, wmax=0.35, target_maxdd=None,
+                 expanding=False):
     """Renvoie (oos_returns, folds_meta).
     returns : DataFrame (index temps, colonnes actifs).
+    expanding=False : train glissant de `train` semaines avant chaque pli.
+    expanding=True  : train croissant, du début de l'historique jusqu'au pli
+    (mêmes plis de test ; seul le passé vu par l'optimiseur change).
     """
     R = returns.values
     T = R.shape[0]
@@ -59,7 +63,7 @@ def walk_forward(returns, method, train=260, test=52, step=52,
     folds = []
     start = 0
     while start + train + 1 <= T:
-        tr = R[start:start + train]
+        tr = R[0 if expanding else start:start + train]
         te_end = min(start + train + test, T)
         te = R[start + train:te_end]
         if len(te) == 0:
@@ -69,7 +73,7 @@ def walk_forward(returns, method, train=260, test=52, step=52,
         oos.append(seg)
         win = rolling_maxdd(tr @ w, len(te))
         folds.append({
-            "train_start": str(returns.index[start].date()),
+            "train_start": str(returns.index[0 if expanding else start].date()),
             "test_start": str(returns.index[start + train].date()),
             "test_end": str(returns.index[te_end - 1].date()),
             "insample_cdar": round(m.cdar(tr @ w, alpha), 4),

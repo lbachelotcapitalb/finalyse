@@ -176,7 +176,7 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
     return ret, kept
 
 
-def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
+def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None, expanding=False):
     """Optim CDaR sur une matrice de rendements EUR (pur, hors-réseau).
 
     Objectif principal : `min_cdar` (drawdown minimal, sans rendement espéré) —
@@ -230,13 +230,15 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
     oos_block, ratios = {}, {}
     for method in ("min_cdar", "hrp", "equipondere"):
         oos, folds = bt.walk_forward(ret, method, train=train, test=test, step=test,
-                                     alpha=alpha, wmax=wmax)
+                                     alpha=alpha, wmax=wmax, expanding=expanding)
         entry = {"n_folds": len(folds),
                  "oos": m.summary(oos, alpha) if len(oos) > 3 else {}}
         entry["honnetete"] = bt.honesty_check(folds)
         ratios[method] = (entry["honnetete"] or {}).get("ratio_realise_sur_promesse")
         oos_block[method] = entry
-    out["walk_forward"] = {"train": train, "test": test, **oos_block}
+    out["walk_forward"] = {"train": train, "test": test,
+                           "fenetre_train": "croissante" if expanding else "glissante",
+                           **oos_block}
 
     # Profils (décision Léo, 03/10/2026, v2) : mélange HRP ↔ 1/N, SANS prévision
     # de rendement. La v1 prenait le point de frontière le plus rentable sous la
@@ -251,7 +253,7 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
         w, atteignable, mdd_is, lam = opt.profile_blend(R, target, marge=marge, wmax=wmax)
         oos, folds = bt.walk_forward(ret, "profil_mix", train=train, test=test, step=test,
                                      cdar_budget=marge, alpha=alpha, wmax=wmax,
-                                     target_maxdd=target)
+                                     target_maxdd=target, expanding=expanding)
         oos_sum = m.summary(oos, alpha) if len(oos) > 3 else {}
         hon = bt.honesty_check(folds)
         oos_mdd = oos_sum.get("max_drawdown")

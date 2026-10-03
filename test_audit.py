@@ -162,6 +162,24 @@ def test_profiles_blend_without_mu():
         assert "HRP" in p["construction"] and "1/N" in p["construction"]
 
 
+def test_expanding_window_same_test_folds():
+    """Fenêtre croissante : mêmes plis de test que la glissante, train qui part
+    toujours du début (il voit donc chaque crise passée)."""
+    ret = _iid(seed=14)
+    oos_g, f_g = bt.walk_forward(ret, "hrp", train=260, test=52, step=52)
+    oos_c, f_c = bt.walk_forward(ret, "hrp", train=260, test=52, step=52, expanding=True)
+    assert [f["test_start"] for f in f_g] == [f["test_start"] for f in f_c]
+    assert len(oos_g) == len(oos_c)
+    assert {f["train_start"] for f in f_c} == {str(ret.index[0].date())}
+    assert len({f["train_start"] for f in f_g}) == len(f_g) > 1
+    # 1/N n'estime rien : la fenêtre ne change pas son hors-échantillon.
+    a, _ = bt.walk_forward(ret, "equipondere", train=260, test=52, step=52)
+    b, _ = bt.walk_forward(ret, "equipondere", train=260, test=52, step=52, expanding=True)
+    assert np.allclose(a, b)
+    res = P.optimize_envelope(ret, wmax=0.5, expanding=True)
+    assert res["walk_forward"]["fenetre_train"] == "croissante"
+
+
 if __name__ == "__main__":
     for name in [n for n in list(globals()) if n.startswith("test_")]:
         globals()[name]()
