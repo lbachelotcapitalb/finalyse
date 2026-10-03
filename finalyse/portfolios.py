@@ -197,48 +197,70 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
     out["frontiere"] = [{"cdar_budget": round(p["cdar_budget"], 4),
                          **m.summary(pr(p["weights"]), alpha)} for p in frontier]
     prof = profiles or {"prudent": 0.10, "equilibre": 0.20, "dynamique": 0.35}
-    out["profils"] = {}
-    for name, target in prof.items():
-        best = None
-        for p in frontier:
-            r = pr(p["weights"])
-            mdd, cg = m.max_drawdown(r), m.cagr(r)
-            if mdd <= target and (best is None or cg > best["_cg"]):
-                best = {"weights": p["weights"], "_cg": cg}
-        w = best["weights"] if best else w_cdar
-        out["profils"][name] = {"cible_maxdd": target, "poids": wd(w),
-                                "in_sample": m.summary(pr(w), alpha)}
 
     # --- Walk-forward OOS : le garde-fou anti-surajustement -------------------
     # On ré-estime les poids sur une fenêtre train, on les fige sur le test
     # suivant, on roule. Un min-CDaR qui exploite une série lisse in-sample voit
     # son drawdown RÉALISÉ hors-échantillon exploser : c'est là qu'on le démasque.
+    # Les PROFILS passent le même test : leur règle (rendement max sous perte max
+    # cible) est rejouée dans chaque pli. Le témoin 1/N dit ce que l'univers
+    # rapporte sans optimiseur.
     T = len(ret)
     train = min(260, max(104, T // 2))
     test = 52 if T > 220 else max(20, T // 6)
     oos_block, ratios = {}, {}
-    for method in ("min_cdar", "hrp"):
+    for method in ("min_cdar", "hrp", "equipondere"):
         oos, folds = bt.walk_forward(ret, method, train=train, test=test, step=test,
                                      alpha=alpha, wmax=wmax)
         entry = {"n_folds": len(folds),
                  "oos": m.summary(oos, alpha) if len(oos) > 3 else {}}
-        if method == "min_cdar":
+        if method != "equipondere":
             entry["honnetete"] = bt.honesty_check(folds)
             ratios[method] = (entry["honnetete"] or {}).get("ratio_realise_sur_promesse")
         oos_block[method] = entry
     out["walk_forward"] = {"train": train, "test": test, **oos_block}
 
+    out["profils"] = {}
+    for name, target in prof.items():
+        w, atteignable, mdd_is = opt.profile_on_frontier(
+            R, target, alpha=alpha, wmax=wmax, frontier=frontier)
+        oos, folds = bt.walk_forward(ret, "profil", train=train, test=test, step=test,
+                                     alpha=alpha, wmax=wmax, target_maxdd=target)
+        oos_sum = m.summary(oos, alpha) if len(oos) > 3 else {}
+        hon = bt.honesty_check(folds)
+        oos_mdd = oos_sum.get("max_drawdown")
+        tient = bool(atteignable and oos_mdd is not None and oos_mdd <= target)
+        if not atteignable:
+            motif = (f"cible {target:.0%} inatteignable sur cet univers : repli sur le "
+                     f"drawdown minimal (perte max {mdd_is:.1%})")
+        elif oos_mdd is None:
+            motif = "pas assez d'historique pour un test hors-échantillon"
+        elif tient:
+            motif = f"tient hors-échantillon : perte max réalisée {oos_mdd:.1%} ≤ cible {target:.0%}"
+        else:
+            motif = (f"NE TIENT PAS hors-échantillon : perte max réalisée {oos_mdd:.1%} "
+                     f"> cible {target:.0%}")
+        out["profils"][name] = {"cible_maxdd": target, "poids": wd(w),
+                                "in_sample": m.summary(pr(w), alpha),
+                                "atteignable": atteignable,
+                                "oos": oos_sum, "honnetete": hon,
+                                "tient_oos": tient, "motif": motif}
+    out["walk_forward"]["profils"] = {k: v["oos"] for k, v in out["profils"].items()}
+
     # Recommandation : min_cdar seulement s'il tient OOS (ratio réalisé/promesse
-    # ≤ 1,4 ET meilleur Calmar OOS que HRP) ; sinon HRP (robuste au bruit).
+    # à horizon égal ≤ 1,4 ET meilleur Calmar OOS que HRP) ; sinon HRP. Un ratio
+    # NON MESURÉ ne vaut pas validation : on se replie (échec fermé).
     def _oos_calmar(meth):
         return (oos_block.get(meth, {}).get("oos") or {}).get("calmar")
     c_cdar, c_hrp = _oos_calmar("min_cdar"), _oos_calmar("hrp")
     ratio = ratios.get("min_cdar")
-    ratio_ok = ratio is None or ratio <= 1.4
+    ratio_ok = ratio is not None and ratio <= 1.4
     calmar_ok = c_cdar is not None and (c_hrp is None or c_cdar >= c_hrp)
     cdar_tient = ratio_ok and calmar_ok
     if cdar_tient:
         motif = "min_cdar tient hors-échantillon (drawdown réalisé ≈ promesse, Calmar OOS ≥ HRP)"
+    elif ratio is None:
+        motif = "honnêteté de min_cdar non mesurable (historique trop court) → repli HRP décorrélé"
     elif not ratio_ok:
         motif = (f"min_cdar surajuste : drawdown réalisé/promesse={ratio} (>1,4) "
                  f"→ repli HRP décorrélé")
@@ -248,7 +270,25 @@ def optimize_envelope(ret, alpha=0.95, wmax=0.35, profiles=None):
     reco = "min_cdar" if cdar_tient else "hrp"
     out["recommande"] = {"methode": reco, "motif": motif,
                          "poids": out[reco]["poids"]}
+    out["avertissements"] = envelope_warnings(out)
     return out
+
+
+def envelope_warnings(res):
+    """Ce qu'un lecteur doit savoir AVANT de croire les chiffres. Texte, une
+    ligne par réserve ; consommé tel quel par bWealthy."""
+    av = []
+    f = res["fenetre"]
+    if f["start"] > "2008-09-01":
+        av.append(f"Historique depuis {f['start']} ({f['annees']} ans) : la crise de 2008 "
+                  f"n'est pas dans la fenêtre, les pertes max sont probablement sous-estimées.")
+    av.append("Univers choisi sur l'historique complet (screening) : les tests hors-échantillon "
+              "héritent de ce choix et sont optimistes. Le témoin 1/N mesure ce que l'univers "
+              "rapporte seul.")
+    for name, p in res.get("profils", {}).items():
+        if not p.get("tient_oos"):
+            av.append(f"Profil {name} : {p.get('motif')}.")
+    return av
 
 
 def select_candidates(rows, per_class=4, score_key="score", min_years=None):
