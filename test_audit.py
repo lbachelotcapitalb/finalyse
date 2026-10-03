@@ -101,6 +101,22 @@ def test_min_variance_is_true_optimum():
         assert x @ cov @ x >= v - 1e-12
 
 
+def test_short_series_does_not_truncate_window():
+    idx_long = pd.date_range("2005-01-03", periods=5000, freq="B")
+    idx_short = pd.date_range("2018-01-01", periods=1500, freq="B")
+    px = {"A.EUFUND": pd.Series(np.linspace(100, 200, len(idx_long)), index=idx_long),
+          "B.EUFUND": pd.Series(np.linspace(100, 150, len(idx_long)), index=idx_long),
+          "C.EUFUND": pd.Series(np.linspace(100, 120, len(idx_short)), index=idx_short)}
+    rows = [{"isin": k.split(".")[0], "code": k, "name": k} for k in px]
+    maps = ({r["isin"]: "EUR" for r in rows}, {})
+    ret, _ = P.load_eur_returns(rows, "AV", maps=maps, fetcher=px.get, verbose=False)
+    assert ret.index.min().year == 2018                      # le défaut d'origine
+    exclus = []
+    ret, _ = P.load_eur_returns(rows, "AV", maps=maps, fetcher=px.get, verbose=False,
+                                max_start="2008-03-31", excluded=exclus)
+    assert ret.index.min().year == 2005 and [x["isin"] for x in exclus] == ["C"]
+
+
 if __name__ == "__main__":
     for name in [n for n in list(globals()) if n.startswith("test_")]:
         globals()[name]()

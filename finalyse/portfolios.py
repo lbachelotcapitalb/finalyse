@@ -105,7 +105,8 @@ def apply_annual_fee(ret, annual_fee):
 
 
 def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
-                     fetcher=None, annual_fee=0.0, verbose=True):
+                     fetcher=None, annual_fee=0.0, verbose=True,
+                     max_start=None, excluded=None):
     """rows: liste de dicts (lignes CSV). Renvoie (ret_df EUR, infos).
 
     Chaque actif : fetch cours → devise (catalogue, repli place) → EUR → colonne
@@ -113,6 +114,12 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
     (frais d'enveloppe, ex. AV) déduit. `fetcher(sym)->Series` et `fx_provider(ccy)
     ->Series` sont injectables (tests hors-réseau). `maps` = (by_isin, by_code) de
     currency.build_maps ; None = tout en devise de la place.
+
+    `max_start` (date ISO) : une série qui COMMENCE après cette date est écartée.
+    Sans ce garde, un seul actif à historique court tronque la fenêtre commune de
+    toute l'enveloppe (03/10/2026 : AEJ.PA réduit à 7 ans chez EODHD → CTO
+    passé de 2009 à 2019, crise de 2008 sortie du calcul, sans un mot).
+    Les écartés sont ajoutés à `excluded` (liste fournie par l'appelant).
     """
     import pandas as pd
 
@@ -136,6 +143,15 @@ def load_eur_returns(rows, envelope, maps=None, fx_provider=None,
         if px is None or len(px) < 60:
             if verbose:
                 print(f"  [skip] {sym}: série trop courte ({0 if px is None else len(px)} pts)")
+            continue
+        if max_start is not None and str(px.index.min().date()) > max_start:
+            msg = (f"historique depuis {px.index.min().date()} > {max_start} "
+                   f"(tronquerait la fenêtre commune)")
+            if excluded is not None:
+                excluded.append({"symbol": sym, "isin": isin, "name": row.get("name", ""),
+                                 "motif": msg})
+            if verbose:
+                print(f"  [écarté] {sym}: {msg}")
             continue
         ccy = None
         if maps is not None:

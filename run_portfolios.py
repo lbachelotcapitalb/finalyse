@@ -41,6 +41,8 @@ def main():
     ap.add_argument("--av-fee", type=float, default=0.008,
                     help="frais annuels du contrat AV (couche enveloppe, défaut 0,8 %/an)")
     ap.add_argument("--av-only", action="store_true")
+    ap.add_argument("--max-start", default="2008-03-31",
+                    help="CTO/AV : écarte une série qui commence après (listes « couvrant 2008 »)")
     ap.add_argument("--out", default="result_portfolios.json")
     args = ap.parse_args()
 
@@ -78,13 +80,19 @@ def main():
                                    min_years=args.min_years)
         print(f"\n=== {env} : {len(cand)}/{len(rows)} candidats ===")
         fee = args.av_fee if env == "AV" else 0.0   # frais d'enveloppe : AV seulement
-        ret, kept = P.load_eur_returns(cand, env, maps=maps, annual_fee=fee, verbose=True)
+        exclus = []
+        max_start = None if env == "PEA" else args.max_start   # PEA : ETF récents par nature
+        ret, kept = P.load_eur_returns(cand, env, maps=maps, annual_fee=fee, verbose=True,
+                                       max_start=max_start, excluded=exclus)
         n_non_eur = sum(1 for i in kept if i["ccy"] != "EUR")
         if fee:
             print(f"  frais contrat AV {fee:.2%}/an déduits (net d'enveloppe).")
         print(f"  {len(kept)} actifs retenus, dont {n_non_eur} non-EUR convertis.")
         res = P.optimize_envelope(ret, wmax=args.wmax)
         res["actifs"] = kept
+        res["exclus_historique_court"] = exclus
+        for x in exclus:
+            res["avertissements"].append(f"{x['name'] or x['symbol']} écarté : {x['motif']}.")
         res["frais_enveloppe_annuel"] = fee
         res["devises"] = {"non_eur": n_non_eur, "total": len(kept)}
         result["enveloppes"][env] = res

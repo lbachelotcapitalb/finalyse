@@ -237,13 +237,23 @@ La VL EODHD (`adjusted_close`) est **déjà nette des frais internes du fonds**.
 
 ### B.6 Validation walk-forward + contrôle d'honnêteté (`backtest.py`)
 
-`walk_forward` : estime les poids sur `train` semaines, les **fige** sur les `test` suivantes, roule (fenêtres adaptatives selon la profondeur). `honesty_check` compare le **CDaR in-sample moyen** au **max drawdown réalisé OOS moyen** :
+`walk_forward` : estime les poids sur `train` semaines, les **fige** sur les `test` suivantes, roule (fenêtres adaptatives selon la profondeur). Quatre familles passent ce test : `min_cdar`, `hrp`, **chaque profil** (sa règle « rendement max sous perte max cible » est rejouée dans chaque pli) et le **témoin 1/N** (`equipondere`), qui mesure ce que l'univers rapporte sans optimiseur.
+
+`honesty_check` compare des pertes **de même horizon** (correction du 03/10/2026) :
 
 ```
-ratio_realise_sur_promesse = oos_maxdd_moyen / insample_cdar_moyen
+promesse_pli = moyenne des max drawdown des fenêtres glissantes de len(test) semaines DANS le train
+ratio_realise_sur_promesse = moyenne(max DD OOS des plis) / moyenne(promesse_pli)
+taux_depassement_p95       = part des plis dont le DD OOS dépasse le 95e centile promis (≈ 5 % attendu)
 ```
 
-`optimize_envelope` calcule ce ratio pour `min_cdar` et `hrp`, puis pose la **recommandation** : `min_cdar` **seulement s'il tient** (ratio ≤ 1,4 **ET** Calmar OOS ≥ celui de HRP) ; sinon repli sur `hrp`. Résultat sur le run réel : CTO → HRP, AV → HRP, PEA → min_cdar.
+La v1 divisait par le CDaR du train (5 ans) : une perte d'un an est mécaniquement plus petite, le ratio sortait ~2× trop bas (0,44 contre 0,97 sur des rendements i.i.d., `test_audit.py`). L'ancienne valeur reste tracée (`ancien_ratio_cdar_train`).
+
+**Recommandation** : `min_cdar` **seulement s'il tient** (ratio ≤ 1,4 **ET** Calmar OOS ≥ HRP) ; sinon `hrp`. Un ratio **non mesurable** vaut échec (repli HRP), plus validation par défaut.
+
+**Profils** : chacun porte `oos`, `honnetete`, `atteignable` (une cible qu'aucun point de frontière ne tient → repli `min_cdar` **signalé**), `tient_oos` (perte max OOS ≤ cible) et un `motif`. Attention : les profils, eux, **estiment un rendement** (moyenne historique) — c'est précisément pourquoi leur test OOS est obligatoire.
+
+**Avertissements** (`avertissements[]` par enveloppe) : fenêtre sans 2008, biais de sélection de l'univers, profils qui ne tiennent pas. Relayés tels quels par bWealthy.
 
 ### B.7 Définition des métriques (`metrics.py`)
 
@@ -377,6 +387,7 @@ Tests (aucun réseau) : `python test_fx.py && python test_currency.py && python 
 - **Frais AV forfaitaires** (0,8 %/an) : à remplacer par le taux réel du contrat quand on croise avec un menu assureur précis.
 - **Éligibilité par contrat** : croiser les 150 UC screenées avec le menu réel d'un contrat (ex. AXA Arpèges) pour un arbitrage interne actionnable.
 - **Exposition** : endpoint API + outil MCP bWealthy `optimiser_portefeuille(profil, budget_dd)` sur le contrat JSON.
+- **Biais de sélection** : l'univers est choisi sur l'historique complet (screening § C.8), puis réduit aux actifs retenus (`rebuild_lists.py`). Les tests OOS en héritent et sont optimistes ; seul un screening rejoué **à date** dans chaque pli le lèverait. Le témoin 1/N borne l'effet.
 - **v2** : Black-Litterman + Riskfolio-Lib.
 
 ---
