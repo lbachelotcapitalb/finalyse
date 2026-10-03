@@ -7,9 +7,13 @@ par contrat, soit ~2 min pour 100 contrats. L'app ne fait ensuite que servir le
 portefeuille correspondant au contrat de l'utilisateur : zéro calcul en ligne.
 
 Chaîne par contrat :
-  menu réel (finalyse.contrat_univers) ∩ univers screené (data/list_av.csv,
-  qualité + couverture 2008) → top-N par classe → séries EODHD → conversion EUR
-  → frais du contrat → optimize_envelope → finalyse.contrat_portfolios.
+  menu réel (finalyse.contrat_univers) → screening DU MENU (menu_screen : couverture
+  2008, monétaires exclus, score composite dans le menu) → top-N par classe →
+  séries EODHD → conversion EUR → frais du contrat → optimize_envelope →
+  finalyse.contrat_portfolios.
+  (`--intersect` rejoue l'ancien mode « menu ∩ data/list_av.csv » ; abandonné le
+  03/10/2026 : 23 des 32 fonds de cette liste sont des fonds de pension
+  britanniques, absents de tout contrat français.)
 
 Un contrat SANS menu est ignoré (l'app retombe alors sur l'univers de référence
 générique — dégradation honnête, jamais d'invention de fonds éligibles).
@@ -27,6 +31,7 @@ import urllib.request
 
 from finalyse import portfolios as P
 from finalyse import currency as C
+from finalyse import menu_screen as MS
 
 HERE = os.path.dirname(__file__)
 LIST_AV = os.path.join(HERE, "data", "list_av.csv")
@@ -60,13 +65,25 @@ def main():
                     help="menu ∩ screené en-dessous duquel on n'optimise pas")
     ap.add_argument("--fee", type=float, default=0.008)
     ap.add_argument("--contrat", help="ne traiter qu'un contrat (code)")
+    ap.add_argument("--max-start", default="2008-03-31",
+                    help="un fonds doit exister avant cette date (crise de 2008 dans la fenêtre)")
+    ap.add_argument("--intersect", action="store_true",
+                    help="ancien mode : menu ∩ data/list_av.csv au lieu de screener le menu")
     args = ap.parse_args()
 
     for v in ("EODHD_API_TOKEN", "SUPABASE_URL"):
         if not os.environ.get(v):
             sys.exit(f"{v} absent de l'env.")
 
-    screened = _screened_av()
+    screened = _screened_av() if args.intersect else {}
+    from finalyse import data_eodhd as DE
+    tok = DE._token()
+    _px = {}
+
+    def fetcher(sym):                       # mémoïsé : screening puis chargement
+        if sym not in _px:
+            _px[sym] = DE._fetch_one(sym, tok, start="1999-01-01")
+        return _px[sym]
     contrats = _sb("GET", "contrats?select=code,nom&actif=is.true&order=code")
     if args.contrat:
         contrats = [c for c in contrats if c["code"] == args.contrat]
@@ -86,18 +103,23 @@ def main():
             skipped += 1
             continue
 
-        # Le menu réel, restreint à ce qui a passé le screening qualité/2008.
-        rows = [screened[i] for i in isins if i in screened]
+        rejets = []
+        if args.intersect:
+            rows = [screened[i] for i in isins if i in screened]
+        else:
+            rows, rejets = MS.screen_menu(menu, fetcher, max_start=args.max_start)
         if len(rows) < args.min_fonds:
-            print(f"  [skip] {code}: {len(rows)}/{len(isins)} fonds du menu dans l'univers "
-                  f"screené (< {args.min_fonds}) — menu à enrichir ou à screener")
+            print(f"  [skip] {code}: {len(rows)}/{len(isins)} fonds du menu retenus au "
+                  f"screening (< {args.min_fonds}) — l'app reste sur le générique")
             skipped += 1
             continue
 
         cand = P.select_candidates(rows, per_class=args.per_class)
         try:
-            ret, kept = P.load_eur_returns(cand, "AV", maps=maps,
-                                           annual_fee=args.fee, verbose=False)
+            exclus = []
+            ret, kept = P.load_eur_returns(cand, "AV", maps=maps, fetcher=fetcher,
+                                           annual_fee=args.fee, verbose=False,
+                                           max_start=args.max_start, excluded=exclus)
             res = P.optimize_envelope(ret, wmax=0.35)
         except Exception as e:  # noqa: BLE001 — un contrat qui casse ne stoppe pas le batch
             print(f"  [erreur] {code}: {str(e)[:70]}")
@@ -108,7 +130,9 @@ def main():
         res["frais_enveloppe_annuel"] = args.fee
         res["devises"] = {"non_eur": sum(1 for i in kept if i["ccy"] != "EUR"), "total": len(kept)}
         res["contrat"] = {"code": code, "nom": c["nom"],
-                          "menu_total": len(isins), "menu_retenu": len(cand)}
+                          "menu_total": len(isins), "menu_screene": len(rows),
+                          "menu_retenu": len(cand), "rejets_screening": len(rejets)}
+        res["exclus_historique_court"] = exclus
 
         _sb("PATCH", f"contrat_portfolios?contrat_code=eq.{urllib.parse.quote(code)}"
                      f"&is_current=is.true", {"is_current": False})
