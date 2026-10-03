@@ -52,6 +52,20 @@ def _sb(method, path, body=None):
     return json.loads(raw) if raw else None
 
 
+def _menu(code, page=1000):
+    """Menu complet d'un contrat, PAGINÉ. PostgREST plafonne une réponse à 1 000
+    lignes (max-rows) sans le dire : le 03/10/2026, Generali Himalia (1 771 UC)
+    et Lucya Cardif (2 333) étaient lus tronqués à 1 000."""
+    out, off = [], 0
+    while True:
+        rows = _sb("GET", f"contrat_univers?select=isin,label&contrat_code=eq."
+                          f"{urllib.parse.quote(code)}&order=isin&limit={page}&offset={off}") or []
+        out += rows
+        if len(rows) < page:
+            return out
+        off += page
+
+
 def _screened_av():
     """Univers AV screené : ISIN → ligne (classe, score, years…)."""
     with open(LIST_AV, encoding="utf-8") as f:
@@ -95,8 +109,7 @@ def main():
     ok = skipped = 0
     for c in contrats:
         code = c["code"]
-        menu = _sb("GET", f"contrat_univers?select=isin,label&contrat_code=eq."
-                          f"{urllib.parse.quote(code)}") or []
+        menu = _menu(code)
         isins = [m["isin"].strip().upper() for m in menu]
         if not isins:
             print(f"  [skip] {code}: aucun menu connu → l'app servira l'univers générique")
