@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
-.venv/bin/python push_portfolios.py "${1:-result_20261003_recos.json}"
+.venv/bin/python push_portfolios.py "${1:-result_v2.json}"
 .venv/bin/python - <<'PY'
 import json, os, urllib.request
 base = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1/"
